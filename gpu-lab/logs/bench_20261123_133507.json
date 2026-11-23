@@ -1,0 +1,107 @@
+{
+  "time": "20261123_133507",
+  "gpu": "NVIDIA GeForce RTX 3090 Ti",
+  "torch": "2.6.0+cu124",
+  "tensorrt": "10.8.0.43",
+  "input": [
+    1,
+    64,
+    496,
+    432
+  ],
+  "results": {
+    "torch_fp32": {
+      "latency": {
+        "median_ms": 4.2197,
+        "p99_ms": 4.4175,
+        "min_ms": 4.1974
+      }
+    },
+    "torch_amp_fp16": {
+      "latency": {
+        "median_ms": 2.5477,
+        "p99_ms": 2.5692,
+        "min_ms": 2.5416
+      },
+      "accuracy_cls": {
+        "max_abs": 6.6e-05,
+        "mean_abs": 9e-06,
+        "cosine": 1.0
+      },
+      "accuracy_box": {
+        "max_abs": 6.3e-05,
+        "mean_abs": 1e-05,
+        "cosine": 1.0
+      }
+    },
+    "onnxruntime_cpu": {
+      "accuracy_cls": {
+        "max_abs": 2.9e-05,
+        "mean_abs": 6e-06,
+        "cosine": 1.0
+      },
+      "accuracy_box": {
+        "max_abs": 4.5e-05,
+        "mean_abs": 6e-06,
+        "cosine": 1.00001
+      }
+    },
+    "trt_fp32": {
+      "latency": {
+        "median_ms": 2.7574,
+        "p99_ms": 2.7748,
+        "min_ms": 2.7308
+      },
+      "build_s": 13.0,
+      "engine_mb": 31.03,
+      "accuracy_cls": {
+        "max_abs": 3.8e-05,
+        "mean_abs": 5e-06,
+        "cosine": 1.0
+      },
+      "accuracy_box": {
+        "max_abs": 3.9e-05,
+        "mean_abs": 5e-06,
+        "cosine": 1.0
+      }
+    },
+    "trt_fp16": {
+      "latency": {
+        "median_ms": 1.1131,
+        "p99_ms": 1.1191,
+        "min_ms": 1.1059
+      },
+      "build_s": 24.8,
+      "engine_mb": 10.58,
+      "accuracy_cls": {
+        "max_abs": 0.00014,
+        "mean_abs": 2.1e-05,
+        "cosine": 1.0
+      },
+      "accuracy_box": {
+        "max_abs": 0.000192,
+        "mean_abs": 2.3e-05,
+        "cosine": 1.0
+      }
+    },
+    "trt_int8": {
+      "latency": {
+        "median_ms": 0.6388,
+        "p99_ms": 0.641,
+        "min_ms": 0.6359
+      },
+      "build_s": 60.4,
+      "engine_mb": 6.0,
+      "accuracy_cls": {
+        "max_abs": 0.004357,
+        "mean_abs": 0.000561,
+        "cosine": 0.999748
+      },
+      "accuracy_box": {
+        "max_abs": 0.003859,
+        "mean_abs": 0.000502,
+        "cosine": 0.999792
+      }
+    }
+  }
+}

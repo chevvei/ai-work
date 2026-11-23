@@ -1,0 +1,44 @@
+# 知识源清单：只纳入“人写的、能回答问题的”内容。
+# 套路：先白名单子目录 + 扩展名，再黑名单构建产物/第三方/敏感文件。宁缺毋滥，噪声会直接拉低检索命中率。
+
+[defaults]
+extensions = [".cpp", ".cc", ".c", ".h", ".hpp", ".md", ".txt", ".py", ".cmake", ".sh", ".ps1", ".ini", ".yaml", ".yml", ".json"]
+filenames = ["CMakeLists.txt", "README", "AGENTS.md"]
+max_bytes = 400_000
+exclude_dirs = ["build", "build_*", "3rd_party", "3rdParty", "3rdparty", "third_party", "spdlog", ".git", "release", "dist", "node_modules", "html", "out", "__pycache__", ".vs", ".idea"]
+# 敏感内容一律不入库（密钥、证书、解密相关）
+exclude_globs = ["*.key", "*.pem", "*.crt", "*.p12", "*secret*", "*password*", "*decrypt*", "*credential*", "*token*", "*apiurl*", "*remote_config*", ".env*", "compile_commands.json", "*.user", "*.user.*",
+  # 第三方/生成代码：占块多、没人会问，反而挤占检索名额
+  "*_rc.py", "qcustomplot.*", "tinyxml2.*", "json.hpp", "moc_*", "ui_*.h", "qrc_*"]
+
+[[source]]
+project = "LidarAssistant"
+aliases = ["Lidar Assistant"]  # 问题里出现这些词就路由到本项目
+root = "/home/sti/project/LidarAssistant"
+include = ["src", "doc", "docs", "Docs", "cmake", "shader", ".cursor/skills", "README.md", "AGENTS.md", "CHANGLOG.md", "SWC_Data_Processing_LIDAR_中文版.md", "CMakeLists.txt", "compile_linux.sh"]
+
+[[source]]
+project = "monitor"
+root = "/home/sti/project/uds_dv_monitor_windows"
+include = ["monitor", "common", "doc", "udsCfg", "tool", "test", "temperaturegradienttest", "AGENTS.md", "CMakeLists.txt", "build_run_ubuntu2004.sh"]
+# lidar_config 含服务地址/令牌类配置，不入库
+
+[[source]]
+project = "rs-monitor-release"
+aliases = ["monitor"]  # 问 monitor 时同时查发布版使用手册
+root = "/home/sti/project/rs-monitor"
+include = ["README.md", "uploadData/README.md", "Netboxtools/README.md", "RS-Monitor_UserGuide.pdf"]
+extensions = [".md", ".pdf"]
+max_bytes = 8000000  # 手册 PDF 3.2MB（大部分是截图），文本只有几十 KB
+
+[[source]]
+project = "udslib"
+aliases = ["uds lib"]
+root = "/home/sti/project/udslib"
+include = ["src", "include", "docs", "demo", "tests", "scripts", "README.md", "CHANGELOG.md", "CMakeLists.txt"]
+
+[[source]]
+project = "rs_driver"
+aliases = ["rs driver", "rsdriver", "driver"]
+root = "/home/sti/project/uds_dv_monitor_windows/rs_driver"
+include = ["src", "doc", "README.md", "README_CN.md", "CHANGELOG.md", "CMakeLists.txt"]

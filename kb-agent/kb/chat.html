@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>本地知识库 Agent</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--muted:#6e6e73;--rule:#d2d2d7;--accent:#0a7c66;--code:#1d1f21;--codeink:#e8e8e8}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif}
+  main{max-width:920px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:22px;margin:0 0 4px} .sub{color:var(--muted);font-size:13px;margin:0 0 20px}
+  form{display:grid;gap:10px;background:var(--card);padding:16px;border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  textarea{width:100%;min-height:84px;resize:vertical;padding:12px;border:1px solid var(--rule);border-radius:10px;font:inherit}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  select,button{padding:8px 14px;border-radius:8px;border:1px solid var(--rule);background:var(--card);font:inherit}
+  button{background:var(--accent);color:#fff;border-color:var(--accent);cursor:pointer}
+  button:hover{background:rgba(10,124,102,.85)} button:disabled{opacity:.5;cursor:wait}
+  .examples button{background:rgba(255,255,255,.6);color:var(--ink);border-color:var(--rule);font-size:13px}
+  .examples button:hover{background:rgba(255,255,255,.9)}
+  article{background:var(--card);border-radius:14px;padding:18px;margin-top:16px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .q{font-weight:600;margin-bottom:8px} .a{white-space:pre-wrap;overflow-wrap:anywhere}
+  .src{margin-top:12px;font-size:13px;color:var(--muted)} .src code{background:var(--bg);padding:1px 6px;border-radius:5px}
+  .warn{color:#b3261e} .meta{font-size:12px;color:var(--muted);margin-top:8px}
+  :focus-visible{outline:3px solid rgba(10,124,102,.45);outline-offset:2px}
+</style>
+</head>
+<body>
+<main>
+  <h1>本地知识库 Agent</h1>
+  <p class="sub" id="info">模型与索引都在本机，源码不出本机。回答中的 [n] 对应下方来源文件与行号。</p>
+  <form id="form">
+    <label for="q">问题</label>
+    <textarea id="q" required maxlength="2000" placeholder="例如：udslib 怎么设置诊断请求超时？"></textarea>
+    <div class="row">
+      <label>项目 <select id="project"><option value="">全部</option></select></label>
+      <label>模式 <select id="mode"><option value="rag">RAG（快）</option><option value="agent">Agent（可多轮检索）</option></select></label>
+      <button id="send" type="submit">提问</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+    <div class="row examples" id="examples"></div>
+  </form>
+  <section id="log"></section>
+</main>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const examples = ['LidarAssistant 在 Linux 下怎么编译？', 'udslib 的诊断请求超时在哪里设置？', 'rs_driver 如何解析 DIFOP 包？', 'monitor 怎么配置 UDS 诊断参数？'];
+  examples.forEach((text) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = text;
+    b.addEventListener('click', () => { $('q').value = text; $('q').focus(); });
+    $('examples').append(b);
+  });
+  fetch('/api/projects').then((r) => r.json()).then((d) => {
+    d.projects.forEach((p) => { const o = document.createElement('option'); o.value = p; o.textContent = p; $('project').append(o); });
+    $('info').textContent += ' 已索引 ' + d.chunks + ' 个知识块。';
+  });
+  function el(tag, text, cls) { const e = document.createElement(tag); if (text) e.textContent = text; if (cls) e.className = cls; return e; }
+  $('form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const question = $('q').value.trim();
+    if (!question) return;
+    $('send').disabled = true; $('status').textContent = '检索与生成中…';
+    const card = el('article'); card.append(el('div', question, 'q'));
+    $('log').prepend(card);
+    try {
+      const resp = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, project: $('project').value || null, mode: $('mode').value }) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || resp.statusText);
+      card.append(el('div', data.answer, 'a'));
+      const src = el('div', '', 'src');
+      data.sources.forEach((s) => { const line = el('div'); line.append('[' + s.n + '] '); line.append(el('code', s.project + '/' + s.path + ':' + s.start + '-' + s.end)); src.append(line); });
+      if (!data.sources.length) src.textContent = '没有引用来源：请谨慎采信。';
+      card.append(src);
+      if (data.invalid_citations.length) card.append(el('div', '警告：引用了不存在的编号 ' + data.invalid_citations.join(', '), 'warn'));
+      card.append(el('div', '用时 ' + data.seconds + 's · 证据 ' + data.evidence.length + ' 条 · 步骤 ' + data.trace.map((t) => t.step).join(' → '), 'meta'));
+      $('status').textContent = '完成';
+    } catch (err) {
+      card.append(el('div', '出错：' + err.message, 'warn')); $('status').textContent = '失败';
+    } finally { $('send').disabled = false; }
+  });
+})();
+</script>
+</body>
+</html>
