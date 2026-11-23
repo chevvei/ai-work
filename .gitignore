@@ -2,3 +2,10 @@
 __pycache__/
 .pytest_cache/
 .env
+# 含公司源码切块/问答原文，禁止入库
+kb-agent/index/
+kb-agent/logs/
+# 引擎/ONNX/校准缓存等可再生的大文件
+gpu-lab/logs/*.onnx
+gpu-lab/logs/*.cache
+gpu-lab/logs/*.engine

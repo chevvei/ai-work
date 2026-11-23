@@ -1,14 +1,14 @@
 (function () {
   'use strict';
-  const chapters = (window.HANDBOOK_CHAPTERS || []).concat(window.HANDBOOK_LAB ? [window.HANDBOOK_LAB] : []);
+  const chapters = (window.HANDBOOK_CHAPTERS || []).concat(window.HANDBOOK_LAB ? [window.HANDBOOK_LAB] : [], window.HANDBOOK_CASES || [], window.HANDBOOK_PYTHON ? [window.HANDBOOK_PYTHON] : [], window.HANDBOOK_LOCAL || []);
   const $ = (id) => document.getElementById(id);
   let state = { read: {}, checks: {} };
   try { const saved = JSON.parse(localStorage.getItem('inference-book-v1')); if (saved && typeof saved === 'object') state = { read: saved.read || {}, checks: saved.checks || {} }; } catch (_) { /* 禁用存储时仍可阅读。 */ }
   const save = () => { try { localStorage.setItem('inference-book-v1', JSON.stringify(state)); } catch (_) {} };
   const toast = (text) => { $('toast').textContent = text; $('toast').style.display = 'block'; setTimeout(() => { $('toast').style.display = 'none'; }, 2500); };
   chapters.forEach((chapter, i) => {
-    if (i === 0 || i === 3 || i === 7 || chapter.id === 'lab') {
-      const group = document.createElement('div'); group.className = 'nav-group'; group.textContent = chapter.id === 'lab' ? '动手 · 第一条部署链路' : i === 0 ? '起步 · 先恢复必要基础' : i === 3 ? '交付 · 正确地运行模型' : '进阶 · 定位、回答与取舍'; $('toc').append(group);
+    if (i === 0 || i === 3 || i === 7 || chapter.id === 'lab' || chapter.id === 'fusion-case') {
+      const group = document.createElement('div'); group.className = 'nav-group'; group.textContent = chapter.id === 'fusion-case' ? '场景 · 从问题倒推原理' : chapter.id === 'lab' ? '动手 · 第一条部署链路' : i === 0 ? '起步 · 先恢复必要基础' : i === 3 ? '交付 · 正确地运行模型' : '进阶 · 定位、回答与取舍'; $('toc').append(group);
     }
     const link = document.createElement('a'); link.href = '#' + chapter.id; link.dataset.chapter = chapter.id;
     const name = document.createElement('span'); name.className = 'nav-title'; name.textContent = chapter.title;
