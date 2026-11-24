@@ -31,6 +31,7 @@ def serve(args, retriever, llm):
     store = Store(args.data_dir)
     agent = KnowledgeAgent(retriever, llm, k=args.k)
     gpu = threading.Lock()
+    runs = {}  # run_id -> (client, stop_event)：正在生成的请求，供 /api/stop 定位
     job = {"state": "idle", "log": [], "started": None, "finished": None}
     app = FastAPI(title="研发知识库助手")
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
@@ -62,7 +63,8 @@ def serve(args, retriever, llm):
     def public_qa(d, client):
         return {"qa_id": d["id"], "question": d["question"], "answer": d["answer"], "project": d["project"],
                 "sources": public_sources(d["sources"]), "seconds": d["seconds"], "ts": d["ts"],
-                "likes": d["likes"], "dislikes": d["dislikes"], "favs": d["favs"], "mine": store.my_votes(d["id"], client)}
+                "likes": d["likes"], "dislikes": d["dislikes"], "favs": d["favs"], "mine": store.my_votes(d["id"], client),
+                "followups": d.get("followups") or []}
 
     def visible_projects():
         return [{"name": n, "label": p.get("label") or n} for n, p in sorted(store.settings["projects"].items())
@@ -102,7 +104,9 @@ def serve(args, retriever, llm):
 
     def finish_ask(req, request, client, mode, res):
         qa_id = store.add_qa(client, request.client.host if request.client else "", req.question.strip(), req.project, mode, res)
-        if "没有找到" in res["answer"]:
+        if res.get("followups"):
+            store.set_followups(qa_id, res["followups"])
+        if "没有找到" in res["answer"] and not res.get("stopped"):
             auto_queue("miss", store.get_qa(qa_id), "模型回答“资料中没有找到”")
         return public_qa(store.get_qa(qa_id), client)
 
@@ -111,33 +115,54 @@ def serve(args, retriever, llm):
         """SSE 流式问答：status（进度）/ token（答案片段）/ reset（补引用重来）/ done（最终记录，含出处）/ error。
         套路：生成在工作线程里跑，事件经队列交给响应生成器；排队也作为事件推给前端，用户知道“在等什么”。"""
         import queue
+        import uuid
         mode = check_ask(req)
         q = queue.Queue()
+        run_id, ev = uuid.uuid4().hex[:12], threading.Event()
+        runs[run_id] = (client, ev)
 
         def work():
             try:
+                q.put({"type": "run", "id": run_id})
                 if not gpu.acquire(blocking=False):
                     q.put({"type": "status", "text": "前面有人在提问，排队中…"})
                     if not gpu.acquire(timeout=300):
                         q.put({"type": "error", "text": "当前提问人数较多，请稍后再试"})
                         return
                 try:
-                    res = agent.ask(req.question.strip(), project=req.project or None, mode=mode, on_event=q.put)
+                    res = agent.ask(req.question.strip(), project=req.project or None, mode=mode, on_event=q.put,
+                                    stop_event=ev, followups=True)
                 finally:
                     gpu.release()
                 q.put({"type": "done", "qa": finish_ask(req, request, client, mode, res)})
             except Exception as e:  # 线程里的异常不会传到响应里，必须显式转成事件
                 q.put({"type": "error", "text": f"生成失败：{e}"})
             finally:
+                runs.pop(run_id, None)
                 q.put(None)
 
         threading.Thread(target=work, daemon=True).start()
 
         def events():
-            while (e := q.get()) is not None:
-                yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+            try:
+                while (e := q.get()) is not None:
+                    yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+            finally:  # 客户端断开（关页面/刷新）也要停 GPU，否则没人看的回答还在白白占卡
+                ev.set()
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    class Stop(BaseModel):
+        id: str = Field(max_length=32)
+
+    @app.post("/api/stop")
+    def stop(req: Stop, client: str = Depends(client_id)):
+        """只停自己的那一路；已停止生成的部分照常入库，done 事件仍会从原 SSE 流里回来。"""
+        r = runs.get(req.id)
+        if not r or r[0] != client:
+            return {"ok": False}
+        r[1].set()
+        return {"ok": True}
 
     def auto_queue(origin, d, note):
         """系统自己发现的“不会的题”进审核队列：证据前 3 条作候选出处，管理员改两笔就能通过。

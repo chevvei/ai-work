@@ -56,6 +56,9 @@ class Store:
         if "alts" not in {r["name"] for r in self.db.execute("PRAGMA table_info(feedback)")}:  # 旧库补列
             self.db.execute("ALTER TABLE feedback ADD COLUMN alts TEXT DEFAULT '[]'")
             self.db.commit()
+        if "followups" not in {r["name"] for r in self.db.execute("PRAGMA table_info(qa)")}:
+            self.db.execute("ALTER TABLE qa ADD COLUMN followups TEXT DEFAULT '[]'")
+            self.db.commit()
         self.settings = self._load_settings()
 
     # ---------- 后台开关 ----------
@@ -112,7 +115,13 @@ class Store:
             return None
         d = dict(row)
         d["sources"], d["evidence"] = json.loads(d["sources"]), json.loads(d["evidence"])
+        d["followups"] = json.loads(d.get("followups") or "[]")
         return d
+
+    def set_followups(self, qa_id, items):
+        with self.lock:
+            self.db.execute("UPDATE qa SET followups=? WHERE id=?", (json.dumps(items, ensure_ascii=False), qa_id))
+            self.db.commit()
 
     def my_votes(self, qa_id, client):
         return [r["kind"] for r in self.db.execute("SELECT kind FROM votes WHERE qa_id=? AND client=?", (qa_id, client))]

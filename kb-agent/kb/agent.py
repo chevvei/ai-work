@@ -35,6 +35,31 @@ ANSWER_TAIL = ("\n\n回答要求：资料里与问题相关的步骤不要遗漏
 
 ACTION = re.compile(r"^\s*ACTION:\s*(search|read)\s*\|\s*(.+)$", re.M)
 CITE = re.compile(r"\[(\d+)\]")
+STOPPED = "\n\n> 已停止生成"
+FOLLOW_PROMPT = ("根据上面的问答，列出用户最可能接着问的 3 个问题。要求：每行一个，不加编号，每个不超过 30 字，"
+                 "必须能用【资料】回答，不要重复原问题。")
+
+
+def bigrams(s):
+    s = re.sub(r"\W+", "", s.lower())
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def similar(a, b):
+    x, y = bigrams(a), bigrams(b)
+    return len(x & y) / max(1, min(len(x), len(y)))
+
+
+def pick_followups(question, candidates, n=3):
+    """去掉和原问题、彼此之间太像的候选。套路：追问要“相邻”而不是“同义”，重复问法只会浪费一次点击。"""
+    out = []
+    for q in candidates:
+        q = q.strip().lstrip("-•0123456789.、） ").strip()
+        if 4 <= len(q) <= 40 and similar(q, question) < .6 and all(similar(q, o) < .6 for o in out):
+            out.append(q if q.endswith(("？", "?")) else q + "？")
+        if len(out) == n:
+            break
+    return out
 
 
 def format_evidence(chunks, max_chars=2400):
@@ -63,36 +88,67 @@ class KnowledgeAgent:
     def __init__(self, retriever, llm, k=8, max_steps=3):
         self.retriever, self.llm, self.k, self.max_steps = retriever, llm, k, max_steps
 
-    def ask(self, question, project=None, mode="rag", on_event=None):
-        """on_event(dict)：流式事件。status=进度提示；token=答案片段；reset=答案作废重来（补引用时）。"""
+    def ask(self, question, project=None, mode="rag", on_event=None, stop_event=None, followups=False):
+        """on_event(dict)：流式事件。status=进度提示；token=答案片段；reset=答案作废重来（补引用时）；followups=追问建议。
+        stop_event：threading.Event，置位后在下一个 token 处停止生成，已生成部分照常返回。"""
         emit = on_event or (lambda e: None)
+        stopped = lambda: stop_event is not None and stop_event.is_set()
         t0 = time.time()
         emit({"type": "status", "text": "正在检索资料"})
         evidence = self.retriever.search(question, k=self.k, project=project)
         trace = [{"step": "search", "query": question, "hits": len(evidence)}]
-        if mode == "agent":
+        if mode == "agent" and not stopped():
             emit({"type": "status", "text": f"已找到 {len(evidence)} 段资料，正在判断是否需要补充"})
-            evidence, trace = self._agent_loop(question, evidence, project, trace, emit)
+            evidence, trace = self._agent_loop(question, evidence, project, trace, emit, stopped)
         emit({"type": "status", "text": f"已阅读 {len(evidence)} 段资料，正在生成回答"})
         tok = (lambda s: emit({"type": "token", "text": s})) if on_event else None
         messages = [{"role": "system", "content": SYSTEM},
                     {"role": "user", "content": f"【资料】\n{format_evidence(evidence)}\n\n【问题】{question}{ANSWER_TAIL}"}]
-        answer = self.llm.chat(messages, on_token=tok)
+        answer = "" if stopped() else self.llm.chat(messages, on_token=tok, stop_event=stop_event)
         cites = check_citations(answer, len(evidence))
-        if evidence and not cites["cited"]:
+        if evidence and not cites["cited"] and not stopped():
             # 套路：提示词约束是“软”的，程序校验是“硬”的。没引用就把原回答发回去要求补引用，只重试一次
             trace.append({"step": "recite"})
             emit({"type": "reset", "text": "正在补充出处"})
             answer = self.llm.chat(messages + [{"role": "assistant", "content": answer}, {"role": "user", "content":
                                    "上面的回答缺少出处。请保持内容不变，在每个结论句末补上对应的资料编号 [n]；找不到出处的句子删掉。"}],
-                                   on_token=tok)
+                                   on_token=tok, stop_event=stop_event)
             cites = check_citations(answer, len(evidence))
-        return {"question": question, "answer": answer, "sources": source_list(evidence, cites["cited"]),
-                "invalid_citations": cites["invalid"], "evidence": [f"{c.project}/{c.path}:{c.start}-{c.end}" for c in evidence],
-                "trace": trace, "seconds": round(time.time() - t0, 2), "usage": getattr(self.llm, "last_usage", {})}
+        is_stopped = stopped()
+        if is_stopped:
+            answer = (answer.strip() + STOPPED).strip()
+            trace.append({"step": "stopped"})
+        res = {"question": question, "answer": answer, "sources": source_list(evidence, cites["cited"]),
+               "invalid_citations": cites["invalid"], "evidence": [f"{c.project}/{c.path}:{c.start}-{c.end}" for c in evidence],
+               "trace": trace, "seconds": round(time.time() - t0, 2), "usage": getattr(self.llm, "last_usage", {}),
+               "stopped": is_stopped, "followups": []}
+        if followups and not is_stopped and "没有找到" not in answer:
+            res["followups"] = self.suggest(question, answer, evidence, messages, cites["cited"])
+            if res["followups"]:
+                emit({"type": "followups", "items": res["followups"]})
+        return res
 
-    def _agent_loop(self, question, evidence, project, trace, emit=lambda e: None):
+    def suggest(self, question, answer, evidence, messages, cited):
+        """追问建议。先用“代码概要”里离线预测好的问法（零 GPU 开销、且一定落在知识库里），不够再让模型补。
+        套路：被引用的文件优先——用户刚看完这段代码，最可能接着问它的邻居问题。"""
+        order = [evidence[i - 1] for i in cited] + [c for i, c in enumerate(evidence, 1) if i not in cited]
+        cand, seen = [], set()
+        for c in order:
+            s = self.retriever.summary_of.get((c.project, c.path))
+            if s and s.id not in seen:
+                seen.add(s.id)
+                cand += [ln[2:] for ln in s.text.splitlines() if ln.startswith("- ")]
+        out = pick_followups(question, cand)
+        if len(out) < 2:
+            reply = self.llm.chat(messages + [{"role": "assistant", "content": answer}, {"role": "user", "content": FOLLOW_PROMPT}],
+                                  max_new_tokens=96)
+            out = pick_followups(question, out + reply.splitlines())
+        return out
+
+    def _agent_loop(self, question, evidence, project, trace, emit=lambda e: None, stopped=lambda: False):
         for _ in range(self.max_steps):
+            if stopped():
+                break
             messages = [{"role": "system", "content": SYSTEM + AGENT_RULE},
                         {"role": "user", "content": f"【资料】\n{format_evidence(evidence, 1200)}\n\n【问题】{question}\n"
                                                     "如果资料不足，输出一行 ACTION；否则输出 DONE。"}]

@@ -28,7 +28,7 @@ class TransformersLLM:
         self.model.eval()
         self.max_new_tokens = max_new_tokens
 
-    def chat(self, messages, max_new_tokens=None, stop=None, on_token=None):
+    def chat(self, messages, max_new_tokens=None, stop=None, on_token=None, stop_event=None):
         """on_token：流式回调，每解码出一段文本调用一次。
         套路：generate 放到子线程，主线程从 TextIteratorStreamer 里边取边推——首字延迟从“整段生成完”降到“prefill 完”。"""
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -36,6 +36,14 @@ class TransformersLLM:
         kwargs = dict(**inputs, max_new_tokens=max_new_tokens or self.max_new_tokens, do_sample=False,
                       repetition_penalty=1.05, pad_token_id=self.tokenizer.eos_token_id,
                       stop_strings=stop, tokenizer=self.tokenizer if stop else None)
+        if stop_event is not None:
+            # 套路：停止生成靠 StoppingCriteria——每解码一个 token 问一次“要不要停”，GPU 立刻释放，而不是只断开前端连接
+            from transformers import StoppingCriteria, StoppingCriteriaList
+
+            class _Stop(StoppingCriteria):
+                def __call__(self, input_ids, scores, **kw):
+                    return stop_event.is_set()
+            kwargs["stopping_criteria"] = StoppingCriteriaList([_Stop()])
         if on_token is None:
             with self.torch.no_grad():
                 out = self.model.generate(**kwargs)
@@ -68,7 +76,7 @@ class OpenAICompatLLM:
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model, self.api_key, self.max_new_tokens, self.timeout = model, api_key, max_new_tokens, timeout
 
-    def chat(self, messages, max_new_tokens=None, stop=None, on_token=None):
+    def chat(self, messages, max_new_tokens=None, stop=None, on_token=None, stop_event=None):
         body = {"model": self.model, "messages": messages, "temperature": 0, "max_tokens": max_new_tokens or self.max_new_tokens}
         if stop:
             body["stop"] = stop

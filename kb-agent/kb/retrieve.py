@@ -151,13 +151,15 @@ class Retriever:
                 raise RuntimeError(f"向量数 {index.ntotal} 与块数 {len(chunks)} 不一致：ingest 之后要先跑 index")
             if self.embedder is None:
                 self.embedder = self._embedder or Embedder(manifest["embed_model"])
-        by_file = {}
+        by_file, summary_of = {}, {}
         for c in chunks:
             if c.kind != "summary":
                 by_file.setdefault((c.project, c.path), []).append(c)
+            else:
+                summary_of[(c.project, c.path)] = c
         self.chunks, self.by_id, self.files, self.aliases, self.bm25, self.index = \
             chunks, {c.id: c for c in chunks}, files, aliases, bm25, index
-        self.by_file, self.pos = by_file, {c.id: i for i, c in enumerate(chunks)}
+        self.by_file, self.summary_of, self.pos = by_file, summary_of, {c.id: i for i, c in enumerate(chunks)}
         return len(chunks)
 
     def expand(self, project):
