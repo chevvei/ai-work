@@ -9,7 +9,7 @@ import urllib.request
 
 
 class TransformersLLM:
-    def __init__(self, model_path, load_4bit=False, max_new_tokens=768):
+    def __init__(self, model_path, load_4bit=False, max_new_tokens=768, lora=None):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -20,7 +20,12 @@ class TransformersLLM:
             from transformers import BitsAndBytesConfig
             kwargs["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                                                bnb_4bit_compute_dtype=torch.bfloat16)
-        self.model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs).eval()
+        self.model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
+        if lora:
+            # 套路：底座和适配器分开发布，换版本只换几十 MB 的 adapter；训练时是 4bit 底座，部署用 BF16 也能加载
+            from peft import PeftModel
+            self.model = PeftModel.from_pretrained(self.model, lora)
+        self.model.eval()
         self.max_new_tokens = max_new_tokens
 
     def chat(self, messages, max_new_tokens=None, stop=None):

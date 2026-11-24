@@ -1,0 +1,19 @@
+# 本机实测可用的版本组合（RTX 3090 Ti / 驱动 570 / Ubuntu 20.04 / Python 3.11）
+# torch 需从 cu124 轮子源安装，见 scripts/setup_env_ubuntu2004.sh
+torch==2.6.0+cu124
+transformers==4.51.3
+accelerate==1.16.0
+bitsandbytes==0.50.2
+peft==0.22.0
+sentence-transformers==5.7.0
+faiss-cpu==1.16.0
+rank-bm25==0.2.2
+pypdf==7.1.1
+fastapi==0.165.0
+uvicorn==0.54.0
+numpy==2.4.6
+pytest==9.2.0
+# 第 20 章 TensorRT 基准用（知识库本身不依赖）
+tensorrt-cu12==10.8.0.43
+onnx==1.23.2
+onnxruntime-gpu==1.32.0

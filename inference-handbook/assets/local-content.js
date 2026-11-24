@@ -123,6 +123,28 @@ ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream)</code></pre><p>直
 <li><strong>凭记忆重写代码</strong>：模型会“补全”一段看起来合理的 HeartBeat 类，成员类型和真实代码不一致。加了“只能原样摘抄”的规则后仍然偶尔出现。到这一步，再调提示词已经没什么收益，根本解法是：换更大的模型（14B AWQ 用 vLLM 跑，约 10GB），或者用 QLoRA 在 300~500 条“证据→带引用回答”样本上微调格式（见问题 6）。</li></ol></details>
 <h3>问题 6：什么时候再做 QLoRA 微调？</h3>
 <details><summary><span class="eye" aria-hidden="true"></span>展开：微调的触发条件和最小流程</summary><p>触发条件（满足任一）：检索已找对证据但模型总答错格式；需要固定输出模板（例如 UDS 否定响应码解读）；团队术语模型总理解错。</p><ol><li>从网页问答日志里收集 300–1000 条“问题 + 证据 + 人工修正后的答案”。</li><li>用 peft + bitsandbytes：底座 4bit NF4 冻结，LoRA r=16、alpha=32，只挂在 q/k/v/o 投影上。</li><li>训练数据<strong>保留证据输入</strong>，教模型“看资料回答”，而不是背知识。</li><li>用同一评测集对比微调前后：答案正确率、引用有效率、“资料中没有找到”的误拒率。</li></ol><p>面试表达：“我先用 RAG 解决知识时效和出处问题，用评测集量化检索；QLoRA 只用于格式与术语对齐，并用同一评测集验证收益。”</p></details>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：本机实测——10 个自研项目造数据 + QLoRA（3090 Ti）</summary>
+<p><strong>以前怎么做、遇到什么问题：</strong>只靠提示词约束，7B 底座仍有约 44% 的回答没引用到真正的源块，拒答题 0 分（证据不相关也硬答），偶尔凭记忆重写代码。</p>
+<p><strong>数据怎么来（self-instruct + 检索回放）：</strong>知识库扩到 ~/project 下 10 个项目（新增 pcrt、rsviewpro、safeparamtool、udsLibTestTool、udp_app，共 11310 块；第三方 pcl、重复副本、加密工具不入库）。入库时先脱敏：硬编码密码如 <code>setPassWord("…")</code>、ini 的 <code>pc_password = …</code> 统一替换成 <code>***</code>。造题流程是：分层抽一个 chunk → 让模型扮新同事出题 → 用线上检索重新找证据（找不回源块的题丢掉）→ 用线上同一套 prompt 生成回答 → 程序硬校验（有引用、引用到源块、无越界编号、不自写行号）。每 10 条造 1 条拒答样本，做法是把源文件从证据里删掉。</p>
+<table><tr><th>环节</th><th>数量</th><th>说明</th></tr>
+<tr><td>抽样</td><td>600（seed 1 + seed 2）</td><td>第二批跳过已造过题的源块</td></tr>
+<tr><td>检索回放保留</td><td>463</td><td>98 条题检索找不回源块，已丢弃</td></tr>
+<tr><td>自动校验通过</td><td>305</td><td>失败原因主要是没引用源块</td></tr>
+<tr><td>代码忠实过滤后</td><td>291</td><td>回答 246 + 拒答 45</td></tr>
+<tr><td>先切 val，再过滤 train</td><td>train 248 / val 68</td><td>val 不做过滤，否则评测会偏乐观</td></tr></table>
+<p><strong>踩坑：max_len。</strong>第一次用 3072，日志里 <code>train_too_long: 150</code>，有六成样本被丢掉。统计 token 分布：P50 3423、P90 4494、P95 4859。改为 5120 后只丢 8 条。<em>套路：max_len 按分布的 P95~P97 来定；超长样本整条丢掉，不要截断，截断会砍掉被引用的证据。</em></p>
+<table><tr><th>训练</th><th>值</th></tr><tr><td>可训练参数</td><td>10.1M（0.13%）</td></tr><tr><td>步数 / 用时</td><td>62 步 / 20.4 min（约 18.6 s/步）</td></tr><tr><td>显存峰值</td><td>18.9 GB（4bit + gradient checkpointing，序列长 5120）</td></tr><tr><td>train_loss</td><td>0.096（只在 assistant 段计算 loss）</td></tr></table>
+<table><tr><th>val 68 条（含 5 条拒答）</th><th>底座</th><th>+LoRA</th></tr>
+<tr><td>has_cite 有引用</td><td>0.889</td><td><strong>0.905</strong></td></tr>
+<tr><td>cites_source 引用到真正源块</td><td>0.556</td><td><strong>0.683</strong></td></tr>
+<tr><td>code_faithful 代码原样摘抄</td><td>0.921</td><td><strong>0.968</strong></td></tr>
+<tr><td>refusal_ok 证据不足时拒答</td><td>0.0</td><td><strong>0.8</strong></td></tr>
+<tr><td>self_lineno 自写行号（越低越好）</td><td>0.0</td><td>0.016</td></tr></table>
+<p><strong>怎么读这张表：</strong>收益最大的是拒答，从 0/5 提升到 4/5，这正是提示词教不会、而样本能教会的行为。引用准确率提升 12.7 个点。注意拒答 val 只有 5 条，结论还需要扩大样本复核。另外 self_lineno 出现了 1 例回归，下一轮应把这类样本补进人工校对清单。底座和 LoRA 共用同一份 4bit 权重，底座结果通过 <code>disable_adapter()</code> 得到，所以对比只差在 LoRA 本身。</p>
+<pre><code>$PY -m finetune.make_data --n 300 --seed 1           # 生成 drafts.jsonl + review.md
+$PY -m finetune.make_data --n 300 --seed 2 --append  # 换 seed 扩量
+$PY -m finetune.train_qlora                          # out/lora + logs/train_*.json
+$PY -m finetune.eval_lora                            # logs/eval_lora_*.json</code></pre></details>
 <details><summary><span class="eye" aria-hidden="true"></span>展开：本机复现命令</summary><pre><code>cd kb-agent
 PY=~/venvs/gpu/bin/python
 $PY -m kb.cli ingest                       # 扫描 sources.toml → index/chunks.jsonl
@@ -135,5 +157,112 @@ $PY -m kb.cli ask "monitor 的心跳是怎么实现的？" --mode agent
 $PY -m kb.cli serve                        # 浏览器打开 http://127.0.0.1:8770
 $PY -m pytest -q tests                     # 切块/分词/RRF/去重/引用校验单测</code></pre></details>
 <div class="checks"><strong>自查</strong><ul><li>能说清为什么先 RAG 后微调，以及 24GB 能做哪些训练</li><li>能解释 BM25 和向量检索各自擅长什么、RRF 为什么不用归一化</li><li>能拿出评测集数字证明某个优化有效</li><li>能说出至少三条防幻觉手段</li></ul></div>
-`}
+`},
+{id:'local-kb-tutorial',title:'22 · 实战教程：从零部署知识库 Agent + QLoRA（一键脚本版）',subtitle:'第 20、21 章是“踩坑记录”，本章是“照着做就能复现”的部署手册：每一步都有命令、预期输出、验收标准和本机实测耗时。',priority:'P0',body:`
+<div class="callout"><strong>一句话：两个脚本、九个阶段，从一台装好驱动的 Ubuntu 机器，做到浏览器里能问“udslib 怎么编译”并拿到带出处的回答。</strong>所有数字都来自本机（RTX 3090 Ti 24GB / 驱动 570 / Ubuntu 20.04），日志在 <code>kb-agent/logs/</code>。</div>
+<h3>全景：九个阶段分别产出什么</h3>
+<figure class="diagram"><pre class="mermaid">flowchart LR
+ E[setup_env<br/>venv+依赖+模型] --> T[test<br/>8 个单测]
+ T --> I[ingest<br/>切块+脱敏]
+ I --> X[index<br/>bge-m3 向量]
+ X --> V[eval<br/>recall/MRR]
+ V --> A[ask<br/>冒烟问答]
+ A --> D[data<br/>造 SFT 样本]
+ D --> TR[train<br/>QLoRA]
+ TR --> EL[evallora<br/>底座 vs LoRA]
+ EL --> S[serve<br/>网页 + LoRA]
+ V -. 不达标 .-> I
+ EL -. 无收益 .-> S2[serve 不带 LoRA]</pre><figcaption>图 22-1：阶段间有“门禁”。检索评测不过，不进入生成；LoRA 没收益，就不上线 LoRA</figcaption></figure>
+<table><tr><th>阶段</th><th>命令（在 kb-agent/ 下）</th><th>产物</th><th>验收标准</th><th>本机耗时</th></tr>
+<tr><td>0 环境</td><td><code>bash scripts/setup_env_ubuntu2004.sh</code></td><td>~/venvs/gpu、~/models</td><td>最后一行打印 OK + 显卡名</td><td>首次约 1 小时（主要是下载 15GB 模型）</td></tr>
+<tr><td>1 test</td><td rowspan="5"><code>bash scripts/run_pipeline_ubuntu2004.sh</code></td><td>—</td><td>8 passed</td><td>&lt;1 s</td></tr>
+<tr><td>2 ingest</td><td>index/chunks.jsonl</td><td>10 个项目都有块，敏感值残留为 0</td><td>11310 块</td></tr>
+<tr><td>3 index</td><td>index/vectors.faiss</td><td>块数与 chunks 一致</td><td>70.7 s</td></tr>
+<tr><td>4 eval</td><td>logs/eval_*.json</td><td>recall@8 ≥ 0.9</td><td>数秒，0.955 / MRR 0.752</td></tr>
+<tr><td>5 ask</td><td>终端输出</td><td>回答带 [n]，来源可点回原文</td><td>3.7 s</td></tr>
+<tr><td>6 data</td><td rowspan="3"><code>… run_pipeline_ubuntu2004.sh data train evallora</code></td><td>finetune/data/drafts.jsonl、review.md</td><td>可训练样本 ≥ 200</td><td>两批共 54 min，291 条</td></tr>
+<tr><td>7 train</td><td>finetune/out/lora（39MB）</td><td>train_too_long 占比 &lt; 5%，loss 收敛</td><td>20.4 min，峰值 18.9GB</td></tr>
+<tr><td>8 evallora</td><td>logs/eval_lora_*.json</td><td>cites_source、refusal_ok 优于底座</td><td>10.9 min</td></tr>
+<tr><td>9 serve</td><td><code>… run_pipeline_ubuntu2004.sh serve</code></td><td>http://127.0.0.1:8770</td><td>网页能问答，回答带来源</td><td>加载约 10 s，单问 2–5 s</td></tr></table>
+<h3>第 0 步：环境（只做一次）</h3>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：脚本做了什么、为什么这样做</summary><ol>
+<li><strong>先查驱动</strong>：cu124 轮子要求驱动 ≥ 550，驱动不够直接退出。不要先装 torch 再发现 <code>is_available()=False</code>（第 20 章问题 1）。</li>
+<li><strong>uv 建 venv（Python 3.11）</strong>：不动系统 python3.8，回滚就是删掉目录。</li>
+<li><strong>依赖锁版本</strong>：<code>kb-agent/requirements-gpu.txt</code> 是本机实测能一起工作的组合。<em>套路：可复现的部署 = 锁版本 + 锁模型 + 锁数据。</em>transformers/peft 升级经常改默认行为，比如 peft 已经提示 &lt;5.6 将弃用。</li>
+<li><strong>国内镜像</strong>：PyPI 用阿里云，torch 用阿里云 pytorch-wheels，模型用 hf-mirror。可以用环境变量 <code>PIP_INDEX / TORCH_LINKS / HF_ENDPOINT</code> 覆盖。</li>
+<li><strong>幂等</strong>：venv 已存在就跳过，模型目录里有 config.json 就跳过，脚本中断后可以直接重跑。</li></ol>
+<pre><code>cd ~/Documents/Trae-CN/default/llm-basics
+bash kb-agent/scripts/setup_env_ubuntu2004.sh
+# 期望最后一行：
+OK 2.6.0+cu124 NVIDIA GeForce RTX 3090 Ti transformers 4.51.3 peft 0.22.0</code></pre></details>
+<h3>第 1–5 步：RAG 主线（不训练也能用）</h3>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：配置知识源 sources.toml（换成你自己的项目只改这里）</summary>
+<pre><code>[[source]]
+project = "udslib"                 # 回答里显示的项目名
+aliases = ["uds lib", "诊断库"]     # 问题里出现这些词，就只在本项目里检索（项目路由）
+root = "/home/sti/project/udslib"
+include = ["src", "demo", "tests", "docs", "README.md", "CMakeLists.txt"]   # 白名单</code></pre>
+<p>选源三原则：①只收人写的、能回答问题的内容（源码、文档、脚本）；②第三方库、生成代码、重复副本一律不收（本机排除了 pcl、*-ci、LidarAssistant_Release 等）；③敏感内容不入库，入库后还会再脱敏一遍。<strong>知识库就是一个可以被提问导出的数据库。</strong></p>
+<p>脱敏验收（不能只 grep 123456，十六进制表、单测里的 "12345678" 也会命中，要连同上下文一起匹配）：</p><pre><code>grep -ciE 'pass_?word[^,]{0,20}123456' index/chunks.jsonl   # 期望 0
+grep -oE 'setPassWord\\(\\\\"\\*\\*\\*\\\\"\\)' index/chunks.jsonl | head -1   # 期望 setPassWord(\\"***\\")</code></pre>
+<p>实测效果：部署后在网页上问“pcrt 的 pc_password 默认值是多少？”，回答“资料中没有找到与该问题直接相关的内容”（2.39 s），密码不会通过问答泄露。</p></details>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：每一步的预期输出与常见失败</summary><table><tr><th>步骤</th><th>预期输出（本机）</th><th>失败现象 → 原因 → 处理</th></tr>
+<tr><td>test</td><td><code>8 passed</code></td><td>ImportError → 用了系统 python，确认 <code>PY=~/venvs/gpu/bin/python</code></td></tr>
+<tr><td>ingest</td><td>每个项目的 files/chunks 统计 JSON</td><td>某项目 0 块 → root 路径错，或 include 子目录名大小写不对（docs/Docs）</td></tr>
+<tr><td>index</td><td><code>向量化 11310 块，用时 70.7s</code></td><td>CUDA OOM → 有 serve 进程占着显存；脚本里的 gpu_free 会拦下这种情况</td></tr>
+<tr><td>eval</td><td><code>recall@8 0.955, mrr 0.752</code></td><td>新加项目后 recall 下降 → 看 MISS 题的 top1，通常是新项目的文档抢了名额，给它加 aliases 或排除噪声目录</td></tr>
+<tr><td>ask</td><td>编号步骤 + [1][3] + 来源 README.md:94-100</td><td>没有引用 → 正常情况下会自动 recite 一次；持续没有引用，看 prompt 是否超长</td></tr></table>
+<p>门禁的意义：<strong>eval 不达标就不要往下做</strong>。检索找不回证据时，生成和微调都救不回来。</p></details>
+<h3>第 6–8 步：造数据 → QLoRA → 对比评测（可选，但能量化收益）</h3>
+<figure class="diagram"><pre class="mermaid">flowchart LR
+ C[随机抽 chunk<br/>按项目分层] --> Q[7B 扮新同事出题]
+ Q --> R{线上检索<br/>能找回源块?}
+ R -- 否 --> X1[丢弃]
+ R -- 是 --> G[线上同一 prompt 生成回答]
+ G --> K{程序硬校验<br/>引用/源块/行号/代码忠实}
+ K -- 不过 --> X2[丢弃或人工 fix]
+ K -- 过 --> S[(SFT 样本)]
+ S --> SP[先切 val 15%]
+ SP --> TR[train 248]
+ SP --> VA[val 68 不过滤]</pre><figcaption>图 22-2：拒绝采样造数据。过滤器和评测共用同一把尺子，val 必须在过滤之前切出来</figcaption></figure>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：命令与实测漏斗</summary>
+<pre><code>N=300 SEEDS="1 2" bash scripts/run_pipeline_ubuntu2004.sh data train evallora
+# data：     {"auto_pass": 164, "kept": 254, ...}  第二批 --append 后 kept 463
+# train：    [data] {"train": 248, "train_too_long": 8, "val": 68}
+#            [done] {"train_loss": 0.0962, "seconds": 1222.6, "peak_mem_gb": 18.94}
+# evallora： base / lora 两组指标</code></pre>
+<table><tr><th>漏斗</th><th>条数</th></tr><tr><td>抽样（2×300）</td><td>600</td></tr><tr><td>检索能找回源块</td><td>463</td></tr><tr><td>自动校验通过</td><td>305</td></tr><tr><td>代码忠实（可训练）</td><td>291 = 回答 246 + 拒答 45</td></tr></table>
+<p><strong>人工校对（推荐）</strong>：打开 <code>finetune/data/review.md</code>，把每条的“状态”改为 ok、fix 或 drop。选 fix 时直接改“### 回答”段落。train_qlora 会自动读取这些修改，人工 fix 的样本不受自动过滤影响。</p>
+<p><strong>参数从哪里来</strong>：max_len=5120 来自 token 分布的 P97（P50 3423 / P95 4859）。第一次按经验设成 3072，结果丢掉了六成样本。r=16、lr 2e-4、2 epoch 是 7B QLoRA 常用的起点；数据少于 300 条时不要超过 3 epoch，否则会背题。</p></details>
+<table><tr><th>val 68 条</th><th>底座</th><th>+LoRA</th><th>上线判断</th></tr>
+<tr><td>引用到真正源块</td><td>0.556</td><td>0.683</td><td>✓ 提升</td></tr>
+<tr><td>证据不足时拒答（5 条）</td><td>0.0</td><td>0.8</td><td>✓ 提升，但样本少</td></tr>
+<tr><td>代码原样摘抄</td><td>0.921</td><td>0.968</td><td>✓</td></tr>
+<tr><td>自写行号（越低越好）</td><td>0.0</td><td>0.016</td><td>⚠ 1 例回归，进入下一轮校对</td></tr></table>
+<h3>第 9 步：部署上线</h3>
+<details open><summary><span class="eye" aria-hidden="true"></span>展开：三种部署形态怎么选</summary><table><tr><th>形态</th><th>命令</th><th>显存</th><th>适用</th><th>本机</th></tr>
+<tr><td>A. transformers + LoRA 适配器（默认）</td><td><code>python -m kb.cli --lora finetune/out/lora serve</code></td><td>约 17.6GB（BF16 底座 + 39MB 适配器）</td><td>个人或小团队、单卡、串行请求</td><td>✓ 已验证：ask 4.19 s</td></tr>
+<tr><td>B. 4bit 底座 + LoRA</td><td>再加 <code>--load-4bit</code></td><td>约 6GB</td><td>显卡还要跑别的任务（如 TensorRT 实验）</td><td>与训练时同精度</td></tr>
+<tr><td>C. 合并权重后交给 vLLM</td><td><code>merge_and_unload()</code> 后 save_pretrained，vLLM 起 OpenAI 接口，再 <code>--api-base http://127.0.0.1:8000/v1</code></td><td>取决于 vLLM 的 gpu_memory_utilization</td><td>多人并发、需要连续批处理</td><td>未在本机实测</td></tr></table>
+<p>为什么默认用 A：底座和适配器分开发布，升级只换 39MB 的目录；回滚只需去掉 <code>--lora</code> 参数。业务层只依赖 <code>chat(messages)</code> 一个接口（kb/llm.py），A、B、C 之间切换不需要改问答代码。</p>
+<pre><code>bash scripts/run_pipeline_ubuntu2004.sh serve          # 检测到 finetune/out/lora 就自动带上
+PORT=8771 bash scripts/run_pipeline_ubuntu2004.sh serve  # 换端口
+curl -s -X POST 127.0.0.1:8770/api/ask -H 'Content-Type: application/json' \\
+     -d '{"question":"udslib 在 Linux 下如何编译？"}'</code></pre></details>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：上线检查清单（安全与运维）</summary><ul>
+<li><strong>只监听 127.0.0.1</strong>：源码不出本机。要给同事用，在前面加带鉴权的反向代理（nginx + LDAP/Basic Auth），不要直接改成 0.0.0.0。</li>
+<li><strong>GPU 串行</strong>：server 里有一把锁，并发请求排队，超时返回 503。需要并发时换形态 C。</li>
+<li><strong>索引更新</strong>：代码变了只需要 <code>ingest index eval</code>（约 1.5 分钟），不用重训。适配器学的是“怎么看资料答题”，不是知识本身。</li>
+<li><strong>适配器版本化</strong>：把 <code>out/lora</code> 按日期重命名为 <code>lora_20261123</code>，并和 <code>logs/train_*.json</code>、<code>eval_lora_*.json</code> 一起归档。上线前必须有对应的评测记录。</li>
+<li><strong>何时重训</strong>：回答格式出现系统性退化，或新增项目类型（比如加入 PDF 规格书）时。日常代码更新不需要重训。</li>
+<li><strong>数据与权重不进 git</strong>：<code>finetune/data/</code>、<code>finetune/out/</code>、<code>index/</code> 已加入 .gitignore，因为里面是源码片段。</li></ul></details>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：故障速查表</summary><table><tr><th>现象</th><th>先看哪里</th><th>处理</th></tr>
+<tr><td>is_available() False</td><td>nvidia-smi 驱动版本</td><td>换与驱动匹配的轮子（第 20 章）</td></tr>
+<tr><td>训练日志 train_too_long 很大</td><td>[data] 那一行</td><td>统计 token 分布，把 --max-len 设到 P95–P97</td></tr>
+<tr><td>训练 OOM</td><td>nvidia-smi 有没有残留进程</td><td>停掉 serve；--max-len 降到 4096；保持 bs=1 + grad_accum</td></tr>
+<tr><td>loss 很快接近 0 但 val 变差</td><td>epoch 和样本数</td><td>过拟合：减少 epoch、增加数据或换 seed</td></tr>
+<tr><td>LoRA 版本拒答过多</td><td>evallora 里正常题的 has_cite</td><td>拒答样本占比太高，从 1/10 降到 1/15</td></tr>
+<tr><td>后台日志长时间不更新</td><td>是否被管道缓冲</td><td>python -u 或 print(flush=True)，用 nvidia-smi 看 GPU 是否在跑</td></tr></table></details>
+<div class="checks"><strong>自查</strong><ul><li>能在一台新机器上只用两个脚本复现到 serve</li><li>能说出每个阶段的验收标准，以及哪一步是门禁</li><li>能解释为什么 val 要在过滤前切、max_len 怎么定</li><li>能说清 A/B/C 三种部署形态的取舍，以及 LoRA 的回滚方式</li></ul></div>
+`},
 ];

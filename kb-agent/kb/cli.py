@@ -23,7 +23,7 @@ def make_llm(args):
     from .llm import OpenAICompatLLM, TransformersLLM
     if args.api_base:
         return OpenAICompatLLM(args.api_base, args.api_model)
-    return TransformersLLM(str(args.llm), load_4bit=args.load_4bit)
+    return TransformersLLM(str(args.llm), load_4bit=args.load_4bit, lora=args.lora and str(args.lora))
 
 
 def make_retriever(args, vectors=True):
@@ -101,6 +101,7 @@ def main():
     ap.add_argument("--embed", type=Path, default=DEFAULT_EMBED)
     ap.add_argument("--llm", type=Path, default=DEFAULT_LLM)
     ap.add_argument("--load-4bit", action="store_true", help="bitsandbytes NF4 加载，显存约 5.5GB")
+    ap.add_argument("--lora", type=Path, help="加载 QLoRA 适配器目录，如 finetune/out/lora")
     ap.add_argument("--api-base", help="改用 OpenAI 兼容服务，如 http://127.0.0.1:8000/v1 (vLLM)")
     ap.add_argument("--api-model", default="qwen2.5-coder-7b")
     ap.add_argument("--bm25-only", action="store_true", help="只用关键词检索（对比实验/无 GPU）")
