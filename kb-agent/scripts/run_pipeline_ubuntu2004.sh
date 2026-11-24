@@ -28,7 +28,7 @@ run_stage() {
     test)   step "单元测试"; "$PY" -m pytest -q tests ;;
     ingest) step "切块入库 + 脱敏"; "$PY" -m kb.cli ingest | tee "logs/ingest_$STAMP.json" ;;
     index)  step "bge-m3 向量化"; gpu_free; "$PY" -m kb.cli index ;;
-    eval)   step "检索评测（验收：recall@8 >= 0.9）"; "$PY" -m kb.cli eval | tail -n 1 ;;
+    eval)   step "检索评测 + 卡口（老题回退则退出码 2）"; "$PY" -m kb.cli eval --gate | tail -n 4 ;;
     ask)    step "冒烟问答"; "$PY" -m kb.cli ask "udslib 在 Linux 下如何编译？" ;;
     data)
       step "造微调数据 N=$N SEEDS=$SEEDS"; gpu_free
@@ -40,9 +40,10 @@ run_stage() {
     train)  step "QLoRA 训练"; gpu_free; "$PY" -m finetune.train_qlora 2>&1 | tee "logs/train_qlora_$STAMP.log" | grep -E "^\[(data|done)\]" ;;
     evallora) step "底座 vs LoRA 对比 ${EVAL_ARGS:-}"; gpu_free; "$PY" -m finetune.eval_lora ${EVAL_ARGS:-} > "logs/eval_lora_$STAMP.log" 2>&1; grep -v "^\[" "logs/eval_lora_$STAMP.log" | sed -n '/^{/,$p' ;;
     serve)
-      step "部署网页问答 http://127.0.0.1:$PORT"
-      if [ -d "$LORA" ]; then exec "$PY" -m kb.cli --lora "$LORA" serve --port "$PORT"
-      else exec "$PY" -m kb.cli serve --port "$PORT"; fi ;;
+      HOST="${HOST:-0.0.0.0}"  # 局域网上线；只给本机用设 HOST=127.0.0.1
+      step "部署网页问答 http://$(hostname -I | awk '{print $1}'):$PORT  后台 /admin（口令见 data/admin_token）"
+      if [ -d "$LORA" ]; then exec "$PY" -m kb.cli --lora "$LORA" serve --host "$HOST" --port "$PORT"
+      else exec "$PY" -m kb.cli serve --host "$HOST" --port "$PORT"; fi ;;
     *) echo "未知阶段 $1"; exit 1 ;;
   esac
 }

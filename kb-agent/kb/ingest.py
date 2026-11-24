@@ -9,6 +9,7 @@ import fnmatch
 import hashlib
 import json
 import re
+import subprocess
 import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -44,6 +45,13 @@ def load_config(path):
     for src in cfg.get("source", []):
         merged = dict(defaults)
         merged.update(src)
+        if merged.get("split_by_subdir"):
+            # 知识卡片：一个源按子目录展开成 <子目录>-知识卡片，并以子目录名（产品名）为别名，新产品不用改配置
+            root = Path(merged["root"])
+            for sub in sorted(p for p in root.iterdir() if p.is_dir()) if root.exists() else []:
+                sources.append({**merged, "project": f"{sub.name}{merged.get('suffix', '-知识卡片')}", "root": str(sub),
+                                "aliases": [sub.name, *merged.get("aliases", [])]})
+            continue
         sources.append(merged)
     return sources
 
@@ -212,31 +220,83 @@ def chunk_file(project, rel, path):
     if not text or not text.strip():
         return []
     if suffix in (".md", ".txt"):
+        if text.startswith("---\n") and "\n---\n" in text:
+            # 卡片/文档的元数据头不进正文，用同样行数的空行占位，保证行号引用不偏
+            head = text[:text.index("\n---\n") + 5]
+            text = "\n" * head.count("\n") + text[len(head):]
         return chunk_markdown(project, rel, text)
     return chunk_code(project, rel, text)
 
 
-def ingest(config_path, out_path):
-    """扫描所有知识源，写 chunks.jsonl；返回统计，方便判断是否漏扫/多扫。"""
-    stats, files = {}, {}
+def _git(cwd, *args):
+    return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def resolve_root(src, cache_dir):
+    """返回 (实际扫描根目录, commit)。
+
+    套路：知识库不读你正在开发的工作区——你一切分支，知识就跟着变（monitor 丢 3 题就是这么来的）。
+    配了 ref 就用 git worktree 在 .src/ 下单独检出一份，--detach 避免和工作区抢同一个分支；
+    root 可以是仓库子目录（如 rs_driver），映射到 worktree 里同样的相对位置。
+    """
+    root = Path(src["root"])
+    ref = src.get("ref")
+    if not ref:
+        try:
+            return root, _git(root, "rev-parse", "--short", "HEAD") + "(工作区)"
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return root, None  # ~/kb-docs 这类非 git 目录
+    top = Path(_git(root, "rev-parse", "--show-toplevel"))
+    if src.get("fetch"):
+        _git(top, "fetch", "--quiet")
+    wt = cache_dir / f"{top.name}@{ref.replace('/', '_')}"
+    if (wt / ".git").exists():
+        _git(wt, "checkout", "--detach", "--force", "--quiet", ref)
+    else:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        _git(top, "worktree", "add", "--detach", "--force", str(wt), ref)
+    return wt / root.relative_to(top), _git(wt, "rev-parse", "--short", "HEAD") + f"({ref})"
+
+
+def ingest(config_path, out_path, summaries_path=None):
+    """扫描所有知识源，写 chunks.jsonl；返回统计，方便判断是否漏扫/多扫。
+
+    summaries_path：summarize 生成的“文件概要 + 预测问法”缓存，按文件内容 hash 命中后追加一个 summary 块。
+    """
+    from .summarize import CODE_EXT, file_key, load_cache, summary_text
+    summaries = load_cache(summaries_path) if summaries_path else {}
+    stats, files, versions = {}, {}, {}
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(config_path).resolve().parent / ".src"
     with out_path.open("w", encoding="utf-8") as out:
         for src in load_config(config_path):
-            n_files = n_chunks = 0
+            src["root"], versions[src["project"]] = resolve_root(src, cache_dir)
+            n_files = n_chunks = n_sum = 0
             for path, rel in iter_files(src):
                 chunks = chunk_file(src["project"], rel, path)
                 if not chunks:
                     continue
                 n_files += 1
                 files[f"{src['project']}/{rel}"] = str(path)
+                if summaries and path.suffix.lower() in CODE_EXT:
+                    d = summaries.get(file_key(path))
+                    if d:
+                        # 单块文件的代码块也是 1..end，id 加前缀避免撞车
+                        sid = hashlib.sha1(f"summary:{src['project']}:{rel}".encode()).hexdigest()[:16]
+                        chunks.append(Chunk(sid, src["project"], rel, 1, chunks[-1].end, "summary", "文件概要", summary_text(d)))
+                        n_sum += 1
                 for c in chunks:
                     out.write(json.dumps(asdict(c), ensure_ascii=False) + "\n")
                 n_chunks += len(chunks)
-            stats[src["project"]] = {"files": n_files, "chunks": n_chunks}
+            stats[src["project"]] = {"files": n_files, "chunks": n_chunks, "version": versions[src["project"]]}
+            if n_sum:
+                stats[src["project"]]["summaries"] = n_sum
     # files.json 是 read 工具的白名单：Agent 只能读入库过的文件，不能任意读盘
     (out_path.parent / "files.json").write_text(json.dumps(files, ensure_ascii=False, indent=1), encoding="utf-8")
     aliases = {s["project"]: s.get("aliases", []) for s in load_config(config_path)}
     (out_path.parent / "projects.json").write_text(json.dumps(aliases, ensure_ascii=False, indent=1), encoding="utf-8")
+    # 回答出问题时，先查它依据的是哪个 commit 的资料
+    (out_path.parent / "sources.json").write_text(json.dumps(stats, ensure_ascii=False, indent=1), encoding="utf-8")
     return stats
 
 

@@ -21,6 +21,7 @@ include = ["src", "doc", "docs", "Docs", "cmake", "shader", ".cursor/skills", "R
 [[source]]
 project = "monitor"
 root = "/home/sti/project/uds_dv_monitor_windows"
+ref = "BranchRemoteConfigUbuntu"  # 套路：固定知识分支，检出到 kb-agent/.src/，不受你在工作区切分支影响；远端分支可写 "origin/xxx" 并加 fetch = true
 include = ["monitor", "common", "doc", "udsCfg", "tool", "test", "temperaturegradienttest", "AGENTS.md", "CMakeLists.txt", "build_run_ubuntu2004.sh"]
 # lidar_config 含服务地址/令牌类配置，不入库
 
@@ -42,6 +43,7 @@ include = ["src", "include", "docs", "demo", "tests", "scripts", "README.md", "C
 project = "rs_driver"
 aliases = ["rs driver", "rsdriver", "driver"]
 root = "/home/sti/project/uds_dv_monitor_windows/rs_driver"
+ref = "BranchRemoteConfigUbuntu"  # 子目录也能固定分支：和 monitor 共用同一个 worktree
 include = ["src", "doc", "README.md", "README_CN.md", "CHANGELOG.md", "CMakeLists.txt"]
 
 # ---- 第二批：~/project 下其余自研工程（排除 pcl 第三方、Vibe-Trading 无关、cv_decrypt_file 敏感、*-ci/-1/Release 重复副本）----
@@ -102,3 +104,11 @@ aliases = ["rs_driver"]  # 套路：用产品名做别名，问 rs_driver 时同
 root = "/home/sti/kb-docs/rs_driver"
 include = ["."]
 extensions = [".md", ".txt", ".pdf", ".ini", ".yaml", ".yml", ".json", ".xml", ".cfg", ".conf", ".csv"]
+
+# ---- 知识卡片：后台“纠错/起草 → 管理员审核通过”自动写入；也可以手工在 ~/kb-docs/_cards/<产品>/ 下放 .md ----
+[[source]]
+project = "知识卡片"            # 占位名，实际按子目录展开为 <产品>-知识卡片，并以产品名为别名
+root = "/home/sti/kb-docs/_cards"
+split_by_subdir = true
+include = ["."]
+extensions = [".md"]

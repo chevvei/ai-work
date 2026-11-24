@@ -18,7 +18,7 @@
 {"question": "monitor 的心跳 heartbeat 是怎么实现的？", "project": "monitor", "expect": ["monitor/monitor/control/heart/", "heartbeat"]}
 {"question": "monitor 的 UDS 服务迁移评估结论是什么？", "project": "monitor", "expect": ["UDS服务迁移"]}
 {"question": "monitor 如何录制 pcap 数据？", "project": "monitor", "expect": ["monitor/monitor/control/pcap/"]}
-{"question": "monitor 点云缺失检测怎么做？", "project": "monitor", "expect": ["pointcloud_missing_detector"]}
+{"question": "monitor 点云缺失检测怎么做？", "project": "monitor", "expect": ["pointcloud_missing_detector", "monitor-客户资料/FAQ.md"]}
 {"question": "monitor 和远程配置服务端怎么对接？", "project": "monitor", "expect": ["远程配置服务端对接说明"]}
 {"question": "LidarAssistant 寄存器批量读写想提速，勾选框却找不到，要改哪些配置？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
 {"question": "LidarAssistant 34 服务地址长度想从签名 json 里取，参数栏怎么填？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
@@ -30,3 +30,11 @@
 {"question": "LidarAssistant 灰度图出不来，解析失败一般查什么？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
 {"question": "LidarAssistant 的 DIFOP 不显示，收不到 7788 端口的包，怎么排查？", "project": "LidarAssistant", "expect": ["LidarAssistant-客户资料/FAQ.md"]}
 {"question": "LidarAssistant 防火墙怎么单独放行 UDP 7788 端口？", "project": "LidarAssistant", "expect": ["LidarAssistant-客户资料/FAQ.md"]}
+{"question": "udslib 报 CalcKeyDll file not exist 怎么办？", "project": "udslib", "expect": ["udslib-客户资料/FAQ.md"]}
+{"question": "udslib 电脑有多块网卡，怎么指定从哪个源 IP 发起 DoIP 连接？", "project": "udslib", "expect": ["udslib-客户资料/FAQ.md", "udslib/"]}
+{"question": "udslib 的 arm64 程序运行时报找不到 libudslib_arm64.so 怎么解决？", "project": "udslib", "expect": ["udslib-客户资料/ARM适配指南.md"]}
+{"question": "udslib 刷写序列 csv 里 Y1、Y2、Z1 占位符分别怎么写？", "project": "udslib", "expect": ["udslib-客户资料/配置说明.md"]}
+{"question": "udslib 怎么交叉编译成 aarch64 版本？toolchain 要怎么配？", "project": "udslib", "expect": ["udslib-客户资料/ARM适配指南.md"]}
+{"question": "udslib 的 udsCfg 入口 json 里 ComPar 和 KeyCalculateLib 是做什么的？", "project": "udslib", "expect": ["udslib-客户资料/配置说明.md"]}
+{"question": "udslib 1.1.8 相比之前版本修了哪些问题？", "project": "udslib", "expect": ["udslib-客户资料/版本变更.md", "udslib/"]}
+{"question": "udslib 发送 3E 80 正响应抑制还是一直等回复，怎么处理？", "project": "udslib", "expect": ["udslib-客户资料/FAQ.md"]}

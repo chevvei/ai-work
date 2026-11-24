@@ -1,0 +1,12 @@
+{"question": "LidarAssistant 里升级包是怎么加解密的？", "expect": ["LifeCycle/AesGcm"]}
+{"question": "LidarAssistant 怎么控制防护罩打开关闭？", "expect": ["swc/Shelter/"]}
+{"question": "LidarAssistant 不同雷达型号的防护罩怎么区分处理？", "expect": ["Shelter/ShelterPlatformFactory", "Shelter/IShelterPlatform", "Shelter/ShelterPlatformConfig"]}
+{"question": "LidarAssistant 界面上的刷新帧率是怎么算出来的？", "expect": ["Image/fps_counter"]}
+{"question": "LidarAssistant 串口收发在哪写的？", "expect": ["swc/Uart/"]}
+{"question": "LidarAssistant 功能安全故障监控是怎么实现的？", "expect": ["swc/FusaM/"]}
+{"question": "LidarAssistant 点云按颜色渲染的色条在哪实现？", "expect": ["Image/rscolorwidget"]}
+{"question": "udslib 刷写前怎么读取和解析 hex 固件？", "expect": ["common/hexParser"]}
+{"question": "udslib 刷写数据的校验和是怎么算的？", "expect": ["common/rs_crc32"]}
+{"question": "udslib 怎么获取本机网卡地址？", "expect": ["util/networkUtil"]}
+{"question": "rs_driver 点云包的数据压缩是怎么解开的？", "expect": ["decoder/compress_algo"]}
+{"question": "rs_driver 每条线的垂直角度标定表怎么加载？", "expect": ["decoder/chan_angles"]}
