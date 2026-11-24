@@ -1,4 +1,5 @@
 # 知识源清单：只纳入“人写的、能回答问题的”内容。
+# 客户资料（FAQ / 配置说明 / 配置样例）在 ~/kb-docs，见文件末尾的 *-客户资料 条目。
 # 套路：先白名单子目录 + 扩展名，再黑名单构建产物/第三方/敏感文件。宁缺毋滥，噪声会直接拉低检索命中率。
 
 [defaults]
@@ -73,3 +74,31 @@ project = "udp_app"
 aliases = ["udp_app_karl", "udp app"]
 root = "/home/sti/project/udp_app_karl"
 include = ["src", "docs", "CMakeLists.txt", "build.sh"]
+
+[[source]]
+project = "LidarAssistant-客户资料"
+aliases = ["LidarAssistant"]  # 套路：用产品名做别名，问 LidarAssistant 时同时检索源码和客户资料；不要加“配置”这类通用词，否则所有问题都会被路由进来
+root = "/home/sti/kb-docs/LidarAssistant"
+include = ["."]
+extensions = [".md", ".txt", ".pdf", ".ini", ".yaml", ".yml", ".json", ".xml", ".cfg", ".conf", ".csv"]
+
+[[source]]
+project = "monitor-客户资料"
+aliases = ["monitor"]  # 套路：用产品名做别名，问 monitor 时同时检索源码和客户资料；不要加“配置”这类通用词，否则所有问题都会被路由进来
+root = "/home/sti/kb-docs/monitor"
+include = ["."]
+extensions = [".md", ".txt", ".pdf", ".ini", ".yaml", ".yml", ".json", ".xml", ".cfg", ".conf", ".csv"]
+
+[[source]]
+project = "udslib-客户资料"
+aliases = ["udslib"]  # 套路：用产品名做别名，问 udslib 时同时检索源码和客户资料；不要加“配置”这类通用词，否则所有问题都会被路由进来
+root = "/home/sti/kb-docs/udslib"
+include = ["."]
+extensions = [".md", ".txt", ".pdf", ".ini", ".yaml", ".yml", ".json", ".xml", ".cfg", ".conf", ".csv"]
+
+[[source]]
+project = "rs_driver-客户资料"
+aliases = ["rs_driver"]  # 套路：用产品名做别名，问 rs_driver 时同时检索源码和客户资料；不要加“配置”这类通用词，否则所有问题都会被路由进来
+root = "/home/sti/kb-docs/rs_driver"
+include = ["."]
+extensions = [".md", ".txt", ".pdf", ".ini", ".yaml", ".yml", ".json", ".xml", ".cfg", ".conf", ".csv"]

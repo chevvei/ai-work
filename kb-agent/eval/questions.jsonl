@@ -20,3 +20,13 @@
 {"question": "monitor 如何录制 pcap 数据？", "project": "monitor", "expect": ["monitor/monitor/control/pcap/"]}
 {"question": "monitor 点云缺失检测怎么做？", "project": "monitor", "expect": ["pointcloud_missing_detector"]}
 {"question": "monitor 和远程配置服务端怎么对接？", "project": "monitor", "expect": ["远程配置服务端对接说明"]}
+{"question": "LidarAssistant 寄存器批量读写想提速，勾选框却找不到，要改哪些配置？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 34 服务地址长度想从签名 json 里取，参数栏怎么填？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 保持会话的 3E 80 在哪个表里配置？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 读寄存器提示超过 1424 要分块，上限在哪改？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 怎么把雷达里的温度补偿表导出成 bin 文件？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 的 Flash 擦除区域下拉框是空的怎么办？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 以太网升级能勾功能寻址吗？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 灰度图出不来，解析失败一般查什么？", "project": "LidarAssistant", "expect": ["LidarAssistant/docs/LidarAssistant使用说明文档.md", "LidarAssistant-客户资料/"]}
+{"question": "LidarAssistant 的 DIFOP 不显示，收不到 7788 端口的包，怎么排查？", "project": "LidarAssistant", "expect": ["LidarAssistant-客户资料/FAQ.md"]}
+{"question": "LidarAssistant 防火墙怎么单独放行 UDP 7788 端口？", "project": "LidarAssistant", "expect": ["LidarAssistant-客户资料/FAQ.md"]}
