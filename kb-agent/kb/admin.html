@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识库管理后台 · 研发知识库助手</title>
+<link rel="icon" href="/static/logo.svg" type="image/svg+xml">
+<script>
+(function () {
+  var t = localStorage.getItem('kb_theme');
+  if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  document.documentElement.dataset.theme = t;
+})();
+</script>
+<style>
+:root{
+  --bg:#18181b;--bg2:#1f1f23;--panel:#232327;--panel2:#2b2b30;--input:#1c1c20;
+  --line:rgba(255,255,255,.07);--line2:rgba(255,255,255,.12);
+  --text:#ececf1;--sub:#9b9ba4;--muted:#6e6e78;
+  --accent:#4c8dff;--accent-h:#5f9bff;--ring:rgba(76,141,255,.35);
+  --hover:rgba(255,255,255,.08);--zebra:rgba(255,255,255,.025);--on:rgba(255,255,255,.1);
+  --good:#3fb950;--bad:#f85149;--gold:#e3b341;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.18);--shadow-lg:0 12px 48px rgba(0,0,0,.5);
+  --r1:8px;--r2:12px;--r3:16px;--log:#141417;--sw-off:#46464d;
+  color-scheme:dark;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif}
+[data-theme="light"]{
+  --bg:#f6f6f7;--bg2:#ffffff;--panel:#ffffff;--panel2:#f3f3f5;--input:#ffffff;
+  --line:rgba(0,0,0,.07);--line2:rgba(0,0,0,.13);
+  --text:#1d1d1f;--sub:#6b6b73;--muted:#9a9aa2;
+  --accent:#2f6fe4;--accent-h:#3b7cf0;--ring:rgba(47,111,228,.25);
+  --hover:rgba(0,0,0,.05);--zebra:rgba(0,0,0,.018);--on:rgba(0,0,0,.06);
+  --good:#1f9d3a;--bad:#d93a32;--gold:#b7860b;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 4px 14px rgba(0,0,0,.05);--shadow-lg:0 12px 48px rgba(0,0,0,.18);
+  --log:#f7f7f9;--sw-off:#d0d0d6;
+  color-scheme:light}
+*{box-sizing:border-box}
+html,body{background:var(--bg)}
+body{margin:0;color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+a{color:var(--accent);text-decoration:none}
+code{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12px;background:var(--panel2);padding:1px 5px;border-radius:5px}
+button{font:inherit;font-size:13px;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r1);padding:6px 12px;cursor:pointer;
+  transition:background .15s,border-color .15s,box-shadow .15s;white-space:nowrap}
+button:hover{background:var(--hover);border-color:var(--line2)}
+button:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ring)}
+button.primary{background:var(--accent);border-color:transparent;color:#fff;font-weight:500}
+button.primary:hover{background:var(--accent-h)}
+button[data-a="reject"],button[data-a="delete_card"]{color:var(--bad)}
+button[data-a="reject"]:hover,button[data-a="delete_card"]:hover{background:rgba(248,81,73,.12);border-color:rgba(248,81,73,.3)}
+input,textarea,select{background:var(--input);color:var(--text);border:1px solid var(--line2);border-radius:var(--r1);padding:7px 10px;font:inherit;width:100%;
+  transition:border-color .15s,box-shadow .15s}
+textarea{resize:vertical;line-height:1.55}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+input::placeholder,textarea::placeholder{color:var(--muted)}
+input[type=checkbox]{accent-color:var(--accent);width:auto}
+/* header */
+.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;height:56px;padding:0 20px;
+  background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:saturate(1.6) blur(14px);-webkit-backdrop-filter:saturate(1.6) blur(14px);
+  border-bottom:1px solid var(--line)}
+.topbar img{width:28px;height:28px;display:block}
+.topbar h1{font-size:15px;font-weight:600;margin:0;letter-spacing:.2px}
+.topbar .brand-sub{color:var(--muted);font-size:12px;margin-left:2px}
+.topbar .sp{flex:1}
+.topbar a.lnk{color:var(--sub);font-size:13px;padding:6px 10px;border-radius:var(--r1);display:inline-flex;align-items:center;gap:6px}
+.topbar a.lnk:hover{background:var(--hover);color:var(--text)}
+.icon-btn{width:34px;height:34px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:transparent;border-color:transparent;color:var(--sub)}
+.icon-btn:hover{color:var(--text);border-color:transparent}
+.icon-btn svg{width:18px;height:18px}
+[data-theme="dark"] .i-sun,[data-theme="light"] .i-moon{display:none}
+/* layout */
+#main{flex:1}
+.layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:28px;max-width:1320px;margin:0 auto;padding:24px 24px 40px}
+nav{position:sticky;top:80px;align-self:start;display:flex;flex-direction:column;gap:2px}
+nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:none;color:var(--sub);padding:8px 12px;border-radius:var(--r1);font-size:13.5px}
+nav button svg{width:16px;height:16px;flex:none;opacity:.85}
+nav button:hover{background:var(--hover);color:var(--text)}
+nav button.on{background:var(--on);color:var(--text);font-weight:500}
+nav button.on svg{opacity:1;color:var(--accent)}
+.pill{margin-left:auto;min-width:20px;height:18px;padding:0 6px;border-radius:9px;background:var(--bad);color:#fff;font-size:11px;font-weight:600;
+  display:inline-flex;align-items:center;justify-content:center}
+.pill:empty{display:none}
+.content{min-width:0}
+@media (max-width:900px){
+  .layout{grid-template-columns:1fr;gap:14px;padding:14px 14px 32px}
+  nav{position:sticky;top:56px;z-index:4;flex-direction:row;overflow-x:auto;gap:2px;padding:4px;margin:0 -2px;background:var(--panel2);border-radius:var(--r2);scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav button{width:auto;flex:none;padding:7px 12px}
+  nav button.on{background:var(--panel);box-shadow:var(--shadow)}
+  .topbar .brand-sub{display:none}
+  .grid2{grid-template-columns:1fr !important}
+}
+/* cards */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r2);padding:20px;margin-bottom:18px;box-shadow:var(--shadow)}
+.card h3{margin:0 0 12px;font-size:14.5px;font-weight:600;letter-spacing:.1px}
+.card .card{box-shadow:none;background:var(--panel2);border-color:transparent;padding:16px}
+.hint{color:var(--sub);font-size:12.5px;line-height:1.7}
+.hint b{color:var(--text);font-weight:500}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.stat{background:var(--panel2);border-radius:var(--r2);padding:14px 16px;color:var(--sub);font-size:12.5px}
+.stat b{display:block;font-size:24px;font-weight:600;margin-top:6px;color:var(--text);font-variant-numeric:tabular-nums}
+/* tables */
+.card table{width:100%;border-collapse:separate;border-spacing:0}
+th,td{border-bottom:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:middle}
+thead th{position:sticky;top:56px;z-index:1;background:var(--panel);color:var(--sub);font-weight:500;font-size:12px;border-bottom:1px solid var(--line2)}
+tbody tr:nth-child(even) td{background:var(--zebra)}
+tbody tr:hover td{background:var(--hover)}
+tbody tr:last-child td{border-bottom:0}
+td{font-variant-numeric:tabular-nums}
+td.q{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+td.q:hover{color:var(--accent)}
+td.row{display:flex;gap:6px}
+td.row button{padding:4px 10px;font-size:12px}
+@media (max-width:900px){thead th{top:112px}.card{padding:14px;overflow-x:auto}}
+/* switch */
+.sw{position:relative;display:inline-block;width:36px;height:20px;flex:none}
+.sw input{display:none}
+.sw span{position:absolute;inset:0;background:var(--sw-off);border-radius:10px;transition:background .2s;cursor:pointer}
+.sw span:before{content:"";position:absolute;width:16px;height:16px;left:2px;top:2px;background:#fff;border-radius:50%;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.sw input:checked+span{background:var(--good)}
+.sw input:checked+span:before{transform:translateX(16px)}
+.grid2{display:grid;grid-template-columns:170px 1fr;gap:12px 16px;align-items:center}
+.grid2>label{color:var(--sub);font-size:13px}
+/* tags */
+.tag{display:inline-flex;align-items:center;font-size:11.5px;line-height:18px;padding:0 8px;border-radius:6px;background:var(--panel2);color:var(--sub);font-weight:500}
+.tag.pin{color:var(--gold);background:rgba(227,179,65,.13)}
+.tag.auto{color:var(--good);background:rgba(63,185,80,.13)}
+.tag.o-correction{color:#4c8dff;background:rgba(76,141,255,.14)}
+.tag.o-draft{color:#a371f7;background:rgba(163,113,247,.15)}
+.tag.o-stale{color:#d29922;background:rgba(210,153,34,.15)}
+.tag.o-miss{color:#f85149;background:rgba(248,81,73,.14)}
+.tag.o-dislike{color:#f0883e;background:rgba(240,136,62,.15)}
+.tag.cat-A{color:#2fb8ac;background:rgba(47,184,172,.14)}
+.tag.cat-B{color:#db61a2;background:rgba(219,97,162,.14)}
+.tag.cat-C{color:#e3b341;background:rgba(227,179,65,.15)}
+[data-theme="light"] .tag.o-correction{color:#1f5fd1}
+[data-theme="light"] .tag.o-draft{color:#7c3fd6}
+[data-theme="light"] .tag.o-stale{color:#9a6700}
+[data-theme="light"] .tag.o-miss{color:#c9302a}
+[data-theme="light"] .tag.o-dislike{color:#bc4c00}
+[data-theme="light"] .tag.cat-A{color:#127a71}
+[data-theme="light"] .tag.cat-B{color:#b3307a}
+[data-theme="light"] .tag.cat-C{color:#9a6700}
+pre.log{background:var(--log);border:1px solid var(--line);border-radius:var(--r1);padding:12px 14px;max-height:340px;overflow:auto;
+  font:12px/1.6 "SF Mono",Menlo,Consolas,monospace;white-space:pre-wrap;color:var(--sub);margin:12px 0 0}
+.bars{display:flex;align-items:flex-end;gap:6px;height:110px;padding-top:8px}
+.bars div{flex:1;background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent) 55%,transparent));border-radius:5px 5px 2px 2px;position:relative;min-height:2px;transition:opacity .15s}
+.bars div:hover{opacity:.8}
+.bars div span{position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:9}
+.modal .card{width:min(900px,92vw);max-height:86vh;overflow:auto;border:0;border-radius:var(--r3);box-shadow:var(--shadow-lg);padding:24px}
+.modal .card h3{margin-top:14px}
+.login-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:24px}
+.login{width:min(400px,100%);margin:0;border-radius:var(--r3);padding:28px;box-shadow:var(--shadow-lg);border:0}
+.login .logo{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.login .logo img{width:36px;height:36px}
+.login h3{font-size:17px;margin:0}
+.row{display:flex;gap:8px;align-items:center}.grow{flex:1}
+.ok{color:var(--good)}.bad{color:var(--bad)}
+p.ok,p.bad{padding:10px 14px;border-radius:var(--r1);background:rgba(63,185,80,.1)}
+p.bad{background:rgba(248,81,73,.1)}
+.seg{display:inline-flex;gap:2px;padding:3px;background:var(--panel2);border-radius:10px}
+.seg button{border:0;background:none;color:var(--sub);padding:5px 12px;border-radius:7px}
+.seg button:hover{color:var(--text);background:var(--hover)}
+.seg button.primary{background:var(--panel);color:var(--text);box-shadow:var(--shadow);font-weight:500}
+.foot{text-align:center;color:var(--sub);font-size:11.5px;padding:18px 16px 24px;line-height:1.7}
+.cards-t th,.cards-t td:not(.q){white-space:nowrap}
+.cards-t td.q{width:100%;max-width:0}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <img src="/static/logo.svg" alt="logo">
+  <h1>知识库管理后台</h1><span class="brand-sub">研发知识库助手</span>
+  <span class="sp"></span>
+  <a class="lnk" href="/" target="_blank"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>返回问答</a>
+  <button class="icon-btn" id="themeBtn" title="切换主题" aria-label="切换主题">
+    <svg class="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    <svg class="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  </button>
+  <button class="icon-btn" id="logout" title="退出登录" aria-label="退出登录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button>
+</header>
+<div class="login-wrap" id="login" style="display:none">
+  <div class="login card">
+    <div class="logo"><img src="/static/logo.svg" alt="logo"><h3>管理员登录</h3></div>
+    <p class="hint">口令在服务器 <code>kb-agent/data/admin_token</code>，启动服务时也会打印。</p>
+    <div class="row" style="margin-top:14px"><input id="tok" type="password" placeholder="管理员口令"><button class="primary" id="loginBtn">进入</button></div>
+  </div>
+</div>
+<div id="main" style="display:none">
+ <div class="layout">
+  <nav id="nav">
+    <button data-p="dash" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>概览</button>
+    <button data-p="review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>审核与学习 <span class="pill" id="pendN"></span></button>
+    <button data-p="projects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>项目与可见性</button>
+    <button data-p="questions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>问题与榜单</button>
+    <button data-p="knowledge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>知识更新</button>
+    <button data-p="site"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>站点设置</button>
+  </nav>
+  <main class="content">
+
+  <section data-page="review" hidden>
+    <div class="card">
+      <h3>批量起草“客户常问”</h3>
+      <p class="hint">每行贴一个问题 → 模型用“深度”模式自己查代码和文档起草答案（带出处）→ 进入下方审核队列。你只需要核对、改几个字、点通过。<br>
+        资料里查不到的会标“资料不足”，这类就是真正需要你补知识的。</p>
+      <textarea id="draftQs" rows="5" placeholder="LidarAssistant 怎么配置保持会话？&#10;udslib 在 arm64 上交叉编译要改哪些地方？&#10;monitor 点云缺失检测阈值在哪改？"></textarea>
+      <div class="row" style="margin-top:8px"><span class="hint">限定项目</span><select id="draftProj" style="width:200px"></select>
+        <span class="grow hint" id="draftMsg"></span><button class="primary" id="draftBtn">开始起草</button></div>
+    </div>
+    <div class="card">
+      <div class="row" style="margin-bottom:10px">
+        <h3 class="grow" style="margin:0">审核队列</h3>
+        <span class="seg"><button data-s="pending" class="fs primary">待审核</button><button data-s="approved" class="fs">已通过</button><button data-s="rejected" class="fs">已驳回</button></span>
+      </div>
+      <p class="hint">来源：<b>纠错</b>=前台用户提交；<b>起草</b>=上面批量起草；<b>过期</b>=已有卡片引用的代码变了，需要复核；<b>答不出</b>=模型回答“没有找到”时自动收集；<b>被点踩</b>=用户点了“没帮助”。答不出/被点踩的出处是当时证据前 3 条，答案需管理员补写。<br>
+        错因：<b>A 没检索到</b>（资料有、没搜出来 → 卡片会补上“问法→出处”）；<b>B 读错了</b>（搜到了、理解错 → 卡片给出标准答案）；<b>C 资料里没有</b>（必须人写答案）。<br>
+        通过 = 写成知识卡片 <code>~/kb-docs/_cards/&lt;产品&gt;/*.md</code> + 自动成为回归评测题 + 自动重新入库（过卡口才上线）。</p>
+      <div id="fbList"></div>
+    </div>
+    <div class="card">
+      <h3>知识卡片 <span class="hint" id="cardDir"></span></h3>
+      <table class="cards-t"><thead><tr><th>产品</th><th>问题</th><th>错因</th><th>更新</th><th>状态</th></tr></thead><tbody id="cardTable"></tbody></table>
+    </div>
+  </section>
+
+  <section data-page="dash">
+    <div class="card"><h3>使用情况</h3><div class="stats" id="stats"></div></div>
+    <div class="card"><h3>近 14 天提问量</h3><div class="bars" id="bars"></div><div style="height:18px"></div></div>
+  </section>
+
+  <section data-page="projects" hidden>
+    <div class="card">
+      <h3>项目开关</h3>
+      <p class="hint">
+        <b>启用</b>：关闭后该项目的资料完全不参与检索（谁都问不到）。<br>
+        <b>下拉显示</b>：是否出现在前台“项目”下拉框；关闭但启用 = 能被自动识别检索到，只是不单独列出（客户资料类建议这样，选产品时会自动带上）。<br>
+        <b>显示引用源</b>：关闭后回答仍可引用该项目，但前台只显示“[n] 显示名”，不暴露路径和行号。<br>
+        <b>显示名</b>：下拉框和隐藏引用时展示的名字，留空用项目名。
+      </p>
+      <table><thead><tr><th>项目</th><th>启用</th><th>下拉显示</th><th>显示引用源</th><th>显示名</th><th>块数</th></tr></thead><tbody id="projTable"></tbody></table>
+      <div class="row" style="margin-top:12px"><span class="grow hint" id="projMsg"></span><button class="primary" id="saveProj">保存</button></div>
+    </div>
+    <div class="card">
+      <h3>新增项目</h3>
+      <p class="hint">填服务器上的目录 → “探测”自动给出要扫描的子目录、别名、当前分支 → 确认后追加写入 <code>sources.toml</code>（和本地手改等价，可 git diff 查看）并自动重新入库。<br>
+        <b>别名</b>：大家口头怎么叫它，问题里出现别名就只搜这个项目。<b>关联到</b>：本项目是哪些产品的依赖/配套（例如 SDK 被 monitor 使用），选了之后问那些产品时也会带上本项目。<br>
+        <b>固定分支</b>：填了就用独立检出（git worktree）入库，你本地切分支不影响知识库；留空则跟随工作区。</p>
+      <div class="grid2">
+        <label>目录</label><div class="row"><input id="np_root" placeholder="/home/sti/project/xxx"><button id="np_probe">探测</button></div>
+        <label>项目名</label><input id="np_name">
+        <label>扫描子目录<br><span class="hint">逗号分隔</span></label><input id="np_inc">
+        <label>别名<br><span class="hint">逗号分隔</span></label><input id="np_alias">
+        <label>关联到产品</label><div id="np_link" class="row" style="flex-wrap:wrap"></div>
+        <label>固定分支</label><input id="np_ref" placeholder="留空 = 跟随工作区">
+      </div>
+      <div class="row" style="margin-top:12px"><span class="grow hint" id="npMsg"></span><button class="primary" id="np_add">添加并入库</button></div>
+    </div>
+  </section>
+
+  <section data-page="questions" hidden>
+    <div class="card">
+      <div class="row" style="margin-bottom:10px">
+        <span class="seg"><button data-k="hot" class="qk primary">高频问题</button><button data-k="misses" class="qk">待补资料</button><button data-k="recent" class="qk">全部记录</button></span>
+        <span class="grow"></span><input id="kw" placeholder="搜索问题（全部记录）" style="width:240px">
+      </div>
+      <p class="hint" id="qHint"></p>
+      <table><thead id="qHead"></thead><tbody id="qBody"></tbody></table>
+    </div>
+  </section>
+
+  <section data-page="knowledge" hidden>
+    <div class="card">
+      <h3>知识源版本</h3>
+      <p class="hint">固定了 <code>ref</code> 的仓库显示“commit(分支)”；显示“(工作区)”表示跟随你本地当前分支，切分支知识就会变。</p>
+      <table><thead><tr><th>项目</th><th>文件</th><th>块</th><th>版本</th></tr></thead><tbody id="srcTable"></tbody></table>
+    </div>
+    <div class="card">
+      <h3>重新入库</h3>
+      <p class="hint">流程：拉取各知识源 → 切块 → 增量向量化（只算改动的块）→ 跑评测集 → 通过卡口才替换线上索引并热加载。<br>
+        卡口：任何一道以前命中的评测题变成未命中、或 recall@8 下降超过 0.02，就拒绝上线，线上保持旧索引。<br>
+        新增了更难的评测题导致必然下降时，确认无误后用“强制接受”。</p>
+      <div class="row"><button class="primary" id="rebuild">重新入库</button><button id="rebuildAccept">强制接受并重建</button><button id="reload">仅重新加载索引</button><span class="grow"></span><span id="jobState"></span></div>
+      <pre class="log" id="jobLog">（暂无任务）</pre>
+    </div>
+    <div class="card">
+      <h3>让模型读懂代码（文件概要 + 预测问法）</h3>
+      <p class="hint">模型逐个读代码文件，写“这个文件干什么 + 别人可能怎么问”，作为额外索引入库。用户口语提问（不知道类名/函数名）时，靠它命中真正的代码。<br>
+        按文件内容 hash 缓存：代码没改不重算，新提交只算改动文件。和前台提问共用 GPU，每个文件单独排队，不会卡住前台；量大建议下班后跑。完成后自动重新入库（过卡口才上线）。</p>
+      <table><thead><tr><th>项目</th><th>待生成文件数</th><th>选择</th></tr></thead><tbody id="sumTable"></tbody></table>
+      <div class="row" style="margin-top:10px"><span class="hint">本次最多</span><input id="sumLimit" type="number" min="1" placeholder="不限" style="width:100px">
+        <span class="grow hint" id="sumMsg"></span><button class="primary" id="sumBtn">开始生成</button></div>
+      <pre class="log" id="sumLog" style="max-height:160px">（暂无任务）</pre>
+    </div>
+  </section>
+
+  <section data-page="site" hidden>
+    <div class="card">
+      <h3>站点设置</h3>
+      <div class="grid2">
+        <label>站点标题</label><input id="s_title">
+        <label>底部提示</label><input id="s_notice">
+        <label>示例问题<br><span class="hint">每行一个</span></label><textarea id="s_examples" rows="5"></textarea>
+        <label>允许“深度”模式</label><label class="sw"><input type="checkbox" id="s_agent"><span></span></label>
+        <label>自动上榜：提问人数 ≥</label><input id="s_users" type="number" min="1" style="width:100px">
+        <label>自动上榜：点赞数 ≥</label><input id="s_likes" type="number" min="0" style="width:100px">
+        <label>热门统计天数</label><input id="s_days" type="number" min="1" style="width:100px">
+      </div>
+      <div class="row" style="margin-top:14px"><span class="grow hint" id="siteMsg"></span><button class="primary" id="saveSite">保存</button></div>
+    </div>
+  </section>
+  </main>
+ </div>
+</div>
+<footer class="foot">由 Elon Chen 开发 · © 2026 Elon Chen · All rights reserved · 仅限公司内网使用，后台操作会影响全员回答，请谨慎审核</footer>
+<div class="modal" id="modal"><div class="card" id="modalBody"></div></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const fmt = ts => new Date(ts * 1000).toLocaleString('zh-CN', {hour12: false});
+let data = null, qk = 'hot', poll = null;
+
+async function api(path, opt = {}) {
+  const r = await fetch(path, {...opt, headers: {'Content-Type': 'application/json', 'X-Admin-Token': localStorage.kbAdmin || ''}});
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { showLogin(); throw new Error('未登录'); }
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+function showLogin() { $('#login').style.display = ''; $('#main').style.display = 'none'; }
+$('#loginBtn').onclick = () => { localStorage.kbAdmin = $('#tok').value.trim(); load(); };
+$('#tok').onkeydown = e => e.key === 'Enter' && $('#loginBtn').click();
+$('#logout').onclick = () => { localStorage.kbAdmin = ''; showLogin(); };
+$('#themeBtn').onclick = () => {
+  const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = t; localStorage.setItem('kb_theme', t);
+};
+document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('section[data-page]').forEach(s => s.hidden = s.dataset.page !== b.dataset.p);
+  if (b.dataset.p === 'questions') loadQuestions();
+  if (b.dataset.p === 'review') loadReview();
+  if (b.dataset.p === 'knowledge') loadSum();
+});
+
+async function load() {
+  data = await api('/api/admin/overview');
+  $('#login').style.display = 'none'; $('#main').style.display = '';
+  const s = data.stats;
+  $('#stats').innerHTML = [['累计提问', s.total], ['今日提问', s.today], ['使用人数', s.users], ['平均耗时', (s.avg_seconds ?? 0) + 's'],
+    ['点赞', s.likes], ['点踩', s.dislikes], ['无引用回答', s.no_cite]].map(([k, v]) => `<div class="stat">${k}<b>${v}</b></div>`).join('');
+  const max = Math.max(1, ...s.daily.map(d => d.n));
+  $('#bars').innerHTML = s.daily.length ? s.daily.map(d => `<div style="height:${d.n / max * 100}%" title="${d.d}：${d.n} 问 / ${d.u} 人"><span>${d.d.slice(5)}</span></div>`).join('') : '<span class="hint">暂无数据</span>';
+  renderProjects(); renderSite(); renderSources(); renderJob(data.job);
+}
+
+function sw(id, on) { return `<label class="sw"><input type="checkbox" data-f="${id}" ${on ? 'checked' : ''}><span></span></label>`; }
+function renderProjects() {
+  const counts = Object.fromEntries(Object.entries(data.sources).map(([k, v]) => [k, v.chunks]));
+  $('#projTable').innerHTML = Object.entries(data.settings.projects).sort().map(([n, p]) => `<tr data-n="${esc(n)}">
+    <td>${esc(n)}${data.indexed.includes(n) ? '' : ' <span class="tag">未入库</span>'}</td>
+    <td>${sw('enabled', p.enabled ?? true)}</td><td>${sw('listed', p.listed ?? true)}</td><td>${sw('show_source', p.show_source ?? true)}</td>
+    <td><input data-f="label" value="${esc(p.label || '')}" placeholder="${esc(n)}" style="width:180px"></td><td>${counts[n] ?? '-'}</td></tr>`).join('');
+}
+$('#saveProj').onclick = async () => {
+  const projects = {};
+  document.querySelectorAll('#projTable tr').forEach(tr => {
+    const p = {}; tr.querySelectorAll('[data-f]').forEach(i => p[i.dataset.f] = i.type === 'checkbox' ? i.checked : i.value.trim());
+    projects[tr.dataset.n] = p;
+  });
+  try { await api('/api/admin/settings', {method: 'PUT', body: JSON.stringify({projects})}); $('#projMsg').innerHTML = '<span class="ok">已保存，立即生效（前台刷新页面即可看到）</span>'; await load(); }
+  catch (e) { $('#projMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+
+function renderSite() {
+  const s = data.settings;
+  $('#s_title').value = s.title; $('#s_notice').value = s.notice; $('#s_examples').value = s.examples.join('\n');
+  $('#s_agent').checked = s.allow_agent_mode; $('#s_users').value = s.board_auto_users; $('#s_likes').value = s.board_auto_likes; $('#s_days').value = s.hot_days;
+}
+$('#saveSite').onclick = async () => {
+  const body = {title: $('#s_title').value.trim(), notice: $('#s_notice').value.trim(),
+    examples: $('#s_examples').value.split('\n').map(x => x.trim()).filter(Boolean), allow_agent_mode: $('#s_agent').checked,
+    board_auto_users: +$('#s_users').value || 1, board_auto_likes: +$('#s_likes').value || 0, hot_days: +$('#s_days').value || 30};
+  try { await api('/api/admin/settings', {method: 'PUT', body: JSON.stringify(body)}); $('#siteMsg').innerHTML = '<span class="ok">已保存</span>'; }
+  catch (e) { $('#siteMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+
+function renderSources() {
+  $('#srcTable').innerHTML = Object.entries(data.sources).map(([n, s]) => `<tr><td>${esc(n)}</td><td>${s.files}</td><td>${s.chunks}</td><td>${esc(s.version || '非 git 目录')}</td></tr>`).join('');
+}
+
+// ---------- 问题与榜单 ----------
+document.querySelectorAll('.qk').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.qk').forEach(x => x.classList.toggle('primary', x === b)); qk = b.dataset.k; loadQuestions();
+});
+$('#kw').oninput = () => { if (qk === 'recent') loadQuestions(); };
+async function loadQuestions() {
+  const r = await api(`/api/admin/questions?kind=${qk}&q=${encodeURIComponent($('#kw').value)}`);
+  if (qk === 'hot') {
+    const onBoard = Object.fromEntries(r.board.map(b => [b.norm, b.pinned ? 'pin' : 'auto']));
+    $('#qHint').textContent = '按“提问人数 + 2×点赞 + 收藏 − 2×点踩”排序（同一问题去标点合并）。手动上榜会一直显示；手动下榜后即使达到门槛也不会自动上榜。';
+    $('#qHead').innerHTML = '<tr><th>问题</th><th>人数</th><th>次数</th><th>赞</th><th>踩</th><th>藏</th><th>榜单</th><th>操作</th></tr>';
+    $('#qBody').innerHTML = r.items.map(h => `<tr><td class="q" data-id="${h.qa_id}" title="${esc(h.question)}">${esc(h.question)}</td><td>${h.users}</td><td>${h.asks}</td>
+      <td>${h.likes || 0}</td><td>${h.dislikes || 0}</td><td>${h.favs || 0}</td>
+      <td>${onBoard[h.norm] === 'pin' ? '<span class="tag pin">手动上榜</span>' : onBoard[h.norm] === 'auto' ? '<span class="tag auto">自动上榜</span>' : ''}</td>
+      <td class="row"><button data-a="pin" data-id="${h.qa_id}">上榜</button><button data-a="hide" data-id="${h.qa_id}">下榜</button><button data-a="reset" data-id="${h.qa_id}">恢复自动</button></td></tr>`).join('') || '<tr><td colspan="8" class="hint">暂无数据</td></tr>';
+  } else {
+    $('#qHint').innerHTML = qk === 'misses' ? '没有引用到任何资料、或被点踩的问题。<b>这就是下一批要补的 FAQ</b>：把正确答案写进 ~/kb-docs/&lt;产品&gt;/FAQ.md，标题用这里的原话，然后到“知识更新”重新入库。' : '';
+    $('#qHead').innerHTML = '<tr><th>时间</th><th>问题</th><th>项目</th><th>引用数</th><th>赞/踩</th><th>耗时</th></tr>';
+    $('#qBody').innerHTML = r.items.map(x => `<tr><td>${fmt(x.ts)}</td><td class="q" data-id="${x.id}" title="${esc(x.question)}">${esc(x.question)}</td><td>${esc(x.project || '自动')}</td>
+      <td class="${x.cited ? '' : 'bad'}">${x.cited}</td><td>${x.likes}/${x.dislikes}</td><td>${x.seconds ?? ''}${x.seconds ? 's' : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="hint">暂无数据</td></tr>';
+  }
+  document.querySelectorAll('#qBody td.q').forEach(td => td.onclick = () => showQa(+td.dataset.id));
+  document.querySelectorAll('#qBody button[data-a]').forEach(b => b.onclick = async () => {
+    await api('/api/admin/feature', {method: 'POST', body: JSON.stringify({qa_id: +b.dataset.id, action: b.dataset.a})}); loadQuestions();
+  });
+}
+async function showQa(id) {
+  const d = await api('/api/admin/qa/' + id);
+  $('#modalBody').innerHTML = `<div class="row"><h3 class="grow">${esc(d.question)}</h3><button onclick="modal.style.display='none'">关闭</button></div>
+    <p class="hint">${fmt(d.ts)} · ${esc(d.ip)} · ${esc(d.project || '自动')} · ${d.mode} · ${d.seconds}s · 赞 ${d.likes} 踩 ${d.dislikes} 藏 ${d.favs}</p>
+    <pre class="log">${esc(d.answer)}</pre><h3>引用（完整路径，仅后台可见）</h3>
+    <pre class="log">${d.sources.map(s => `[${s.n}] ${s.project}/${s.path}:${s.start}-${s.end}`).join('\n') || '（无）'}</pre>
+    <h3>检索到的全部证据</h3><pre class="log">${esc(d.evidence.join('\n'))}</pre>`;
+  $('#modal').style.display = 'flex';
+}
+$('#modal').onclick = e => { if (e.target.id === 'modal') e.target.style.display = 'none'; };
+
+// ---------- 知识更新 ----------
+function renderJob(j) {
+  const name = {idle: '空闲', running: '运行中…', done: '<span class="ok">已上线</span>', gate_failed: '<span class="bad">未过卡口，线上未变</span>', failed: '<span class="bad">失败</span>'};
+  $('#jobState').innerHTML = name[j.state] || j.state;
+  if (j.log.length) $('#jobLog').textContent = (j.started ? `开始 ${fmt(j.started)}\n` : '') + j.log.join('\n') + (j.finished ? `\n结束 ${fmt(j.finished)}` : '');
+  clearTimeout(poll);
+  if (j.state === 'running') poll = setTimeout(async () => { const r = await api('/api/admin/overview'); data = r; renderJob(r.job); if (r.job.state !== 'running') load(); }, 2000);
+}
+async function rebuild(accept) {
+  try { renderJob(await api('/api/admin/rebuild' + (accept ? '?accept=true' : ''), {method: 'POST'})); }
+  catch (e) { $('#jobState').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+}
+$('#rebuild').onclick = () => rebuild(false);
+$('#rebuildAccept').onclick = () => confirm('跳过回退检查，直接用本次结果作为新基线并上线？') && rebuild(true);
+$('#reload').onclick = async () => { const r = await api('/api/admin/reload', {method: 'POST'}); $('#jobState').textContent = `已重新加载 ${r.chunks} 块`; load(); };
+
+// ---------- 审核与学习 ----------
+let fs = 'pending', fbItems = [], products = [], draftPoll = null;
+const ORIGIN = {correction: '纠错', draft: '起草', stale: '过期', miss: '答不出', dislike: '被点踩'};
+const CAT = {A: 'A 没检索到', B: 'B 读错了', C: 'C 资料里没有'};
+document.querySelectorAll('.fs').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.fs').forEach(x => x.classList.toggle('primary', x === b)); fs = b.dataset.s; loadReview();
+});
+async function loadReview() {
+  const r = await api('/api/admin/feedback?status=' + fs);
+  fbItems = r.items; products = r.products;
+  const pend = r.stats.filter(s => s.status === 'pending').reduce((a, s) => a + s.n, 0);
+  $('#pendN').textContent = pend || '';
+  const opts = products.map(p => `<option>${esc(p)}</option>`).join('');
+  if (!$('#draftProj').options.length) $('#draftProj').innerHTML = '<option value="">自动识别</option>' + opts;
+  renderDraft(r.draft_job);
+  $('#fbList').innerHTML = fbItems.map((f, i) => `<div class="card" data-i="${i}">
+    <div class="row"><span class="tag o-${esc(f.origin)}">${ORIGIN[f.origin]}</span>${f.category ? `<span class="tag cat-${esc(f.category)}">${CAT[f.category]}</span>` : ''}
+      <span class="hint grow">${fmt(f.ts)}${f.note ? ' · ' + esc(f.note) : ''}</span>${f.qa_id ? `<button data-old="${f.qa_id}">原回答</button>` : ''}</div>
+    <div class="grid2" style="margin-top:10px">
+      <label>问题</label><input data-f="question" value="${esc(f.question)}">
+      <label>其他问法<br><span class="hint">每行一个，可选</span></label><textarea data-f="alts" rows="2" placeholder="客户说法 / 开发说法 / 报错原文，都会被检索并自动变成回归题">${esc((f.alts || []).join('\n'))}</textarea>
+      <label>所属产品</label><select data-f="product">${products.map(p => `<option ${p === (f.project || guessProduct(f)) ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      <label>标准答案<br><span class="hint">Markdown</span></label><textarea data-f="answer" rows="6">${esc(f.answer)}</textarea>
+      <label>出处<br><span class="hint">每行一个，用于过期检测</span></label><textarea data-f="refs" rows="4">${esc(f.refs.join('\n'))}</textarea>
+    </div>
+    ${f.status === 'pending' ? `<div class="row" style="margin-top:10px"><span class="grow"></span>
+      ${f.origin === 'stale' ? '<button data-a="delete_card">删除该卡片</button>' : ''}<button data-a="reject">驳回</button><button class="primary" data-a="approve">通过并学习</button></div>`
+      : `<p class="hint">${f.card ? '卡片：' + esc(f.card) : ''}</p>`}
+  </div>`).join('') || '<p class="hint">队列为空</p>';
+  document.querySelectorAll('#fbList button[data-old]').forEach(b => b.onclick = () => showQa(+b.dataset.old));
+  document.querySelectorAll('#fbList button[data-a]').forEach(b => b.onclick = () => doReview(b));
+  const c = await api('/api/admin/cards');
+  $('#cardDir').textContent = c.dir;
+  $('#cardTable').innerHTML = c.items.map(x => `<tr><td>${esc(x.product)}</td><td class="q" title="${esc(x.path)}">${esc(x.question)}</td><td>${esc(CAT[x.kind] || ORIGIN[x.kind] || x.kind || '')}</td>
+    <td>${esc(x.updated)}</td><td>${x.stale.length ? '<span class="bad">引用已变化</span>' : '<span class="ok">有效</span>'}</td></tr>`).join('') || '<tr><td colspan="5" class="hint">还没有卡片</td></tr>';
+}
+function guessProduct(f) {
+  const p = (f.refs[0] || '').split('/')[0].replace(/-(客户资料|知识卡片)$/, '');
+  return products.includes(p) ? p : '';
+}
+async function doReview(b) {
+  const box = b.closest('[data-i]'), f = fbItems[+box.dataset.i], v = k => box.querySelector(`[data-f="${k}"]`).value;
+  const body = {action: b.dataset.a, question: v('question').trim(), answer: v('answer'), product: v('product'),
+    refs: v('refs').split('\n').map(x => x.trim()).filter(Boolean), alts: v('alts').split('\n').map(x => x.trim()).filter(Boolean)};
+  if (b.dataset.a === 'delete_card' && !confirm('删除这张卡片并重新入库？')) return;
+  try {
+    const r = await api('/api/admin/feedback/' + f.id, {method: 'POST', body: JSON.stringify(body)});
+    box.outerHTML = `<p class="ok">${body.action === 'approve' ? '已通过，写入 ' + esc(r.card) + '，正在后台重新入库（见“知识更新”页）' : '已处理'}</p>`;
+  } catch (e) { alert(e.message); }
+}
+function renderDraft(j) {
+  if (!j || j.state === 'idle') return;
+  $('#draftMsg').textContent = `${j.state === 'running' ? '起草中' : '已完成'} ${j.done}/${j.total}` + (j.log.length ? '：' + j.log[j.log.length - 1] : '');
+  clearTimeout(draftPoll);
+  if (j.state === 'running') draftPoll = setTimeout(loadReview, 4000);
+}
+$('#draftBtn').onclick = async () => {
+  try { renderDraft(await api('/api/admin/draft', {method: 'POST', body: JSON.stringify({questions: $('#draftQs').value, project: $('#draftProj').value || null})})); $('#draftQs').value = ''; }
+  catch (e) { $('#draftMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+
+// ---------- 新增项目 ----------
+$('#np_probe').onclick = async () => {
+  try {
+    const s = await api('/api/admin/project_suggest?root=' + encodeURIComponent($('#np_root').value.trim()));
+    $('#np_name').value = s.name; $('#np_inc').value = s.include.join(', '); $('#np_alias').value = s.aliases.join(', ');
+    $('#np_ref').value = s.is_git ? s.branch : '';
+    if (!products.length) products = (await api('/api/admin/feedback')).products;
+    $('#np_link').innerHTML = products.map(p => `<label class="row" style="gap:4px;width:auto"><input type="checkbox" value="${esc(p)}" style="width:auto">${esc(p)}</label>`).join('');
+    $('#npMsg').textContent = s.is_git ? `git 仓库，当前分支 ${s.branch}` : '非 git 目录，跟随目录内容';
+  } catch (e) { $('#npMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+$('#np_add').onclick = async () => {
+  const split = id => $(id).value.split(/[,，]/).map(x => x.trim()).filter(Boolean);
+  const body = {name: $('#np_name').value.trim(), root: $('#np_root').value.trim(), include: split('#np_inc'), aliases: split('#np_alias'),
+    ref: $('#np_ref').value.trim(), link_to: [...document.querySelectorAll('#np_link input:checked')].map(i => i.value)};
+  try { const r = await api('/api/admin/projects', {method: 'POST', body: JSON.stringify(body)});
+    $('#npMsg').innerHTML = `<span class="ok">已写入 sources.toml，正在重新入库（见“知识更新”页）</span>`; console.log(r.toml); }
+  catch (e) { $('#npMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+
+// ---------- 代码概要 ----------
+let sumPoll = null;
+async function loadSum() {
+  const r = await api('/api/admin/summarize'), j = r.job;
+  const checked = new Set([...document.querySelectorAll('#sumTable input:checked')].map(i => i.value));
+  $('#sumTable').innerHTML = Object.entries(r.pending).sort((a, b) => a[1] - b[1]).map(([p, n]) =>
+    `<tr><td>${esc(p)}</td><td>${n}</td><td><input type="checkbox" value="${esc(p)}" style="width:auto" ${checked.has(p) ? 'checked' : ''}></td></tr>`).join('')
+    || '<tr><td colspan="3" class="ok">全部代码文件都已有概要</td></tr>';
+  $('#sumBtn').textContent = j.state === 'running' ? '停止' : '开始生成';
+  $('#sumMsg').textContent = {running: '生成中…', done: '已完成', failed: '失败'}[j.state] || '';
+  if (j.log.length) $('#sumLog').textContent = j.log.slice(-30).join('\n');
+  clearTimeout(sumPoll);
+  if (j.state === 'running') sumPoll = setTimeout(loadSum, 5000);
+}
+$('#sumBtn').onclick = async () => {
+  const projects = [...document.querySelectorAll('#sumTable input:checked')].map(i => i.value);
+  if ($('#sumBtn').textContent === '开始生成' && !projects.length && !confirm('没有勾选项目，将处理全部项目，确定？')) return;
+  try { await api('/api/admin/summarize', {method: 'POST', body: JSON.stringify({projects, limit: +$('#sumLimit').value || null})}); loadSum(); }
+  catch (e) { $('#sumMsg').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+
+localStorage.kbAdmin ? load().catch(() => {}) : showLogin();
+</script>
+</body>
+</html>

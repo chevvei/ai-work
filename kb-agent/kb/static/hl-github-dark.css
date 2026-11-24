@@ -1,0 +1,7 @@
+.hljs{color:#e6edf3}.hljs-comment,.hljs-quote{color:#8b949e;font-style:italic}
+.hljs-keyword,.hljs-selector-tag,.hljs-type,.hljs-meta .hljs-keyword{color:#ff7b72}
+.hljs-string,.hljs-regexp,.hljs-meta .hljs-string{color:#a5d6ff}
+.hljs-number,.hljs-literal,.hljs-symbol,.hljs-bullet,.hljs-attr,.hljs-variable{color:#79c0ff}
+.hljs-title,.hljs-title.function_,.hljs-section{color:#d2a8ff}
+.hljs-built_in,.hljs-name,.hljs-tag{color:#7ee787}.hljs-meta{color:#ffa657}
+.hljs-addition{color:#aff5b4;background:#033a16}.hljs-deletion{color:#ffdcd7;background:#67060c}
