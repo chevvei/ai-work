@@ -8,6 +8,17 @@ from kb.ingest import Chunk, chunk_code, chunk_markdown  # noqa: E402
 from kb.retrieve import dedupe, rrf, tokenize  # noqa: E402
 
 
+def test_secret_redacted():
+    from kb.ingest import redact
+    text = "\n".join(['data.passWord = "123456";', 'std::string password = "abc123";', 'comm->setPassWord("654321");',
+                      'std::string psw = "111222";', 'pc_password = 778899', 'std::string token = getToken();', 'int n = 0;',
+                      '// 恢复默认密码为 "334455"', 'RLogInfo("Restoring default password to 556677");'])
+    body = redact(text)
+    assert not any(v in body for v in ("123456", "abc123", "654321", "111222", "778899", "334455", "556677"))
+    assert 'passWord = "***"' in body and 'setPassWord("***")' in body and "pc_password = ***" in body
+    assert "getToken();" in body  # 非字面量的赋值不动，避免把代码逻辑抹掉
+
+
 def test_tokenize_splits_identifiers_and_keeps_hex():
     toks = tokenize("UdsClient::sendRequest(0x22) read_data_by_id 读取数据")
     assert {"udsclient", "uds", "client", "sendrequest", "send", "request"} <= set(toks)

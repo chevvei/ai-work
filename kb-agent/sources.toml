@@ -42,3 +42,34 @@ project = "rs_driver"
 aliases = ["rs driver", "rsdriver", "driver"]
 root = "/home/sti/project/uds_dv_monitor_windows/rs_driver"
 include = ["src", "doc", "README.md", "README_CN.md", "CHANGELOG.md", "CMakeLists.txt"]
+
+# ---- 第二批：~/project 下其余自研工程（排除 pcl 第三方、Vibe-Trading 无关、cv_decrypt_file 敏感、*-ci/-1/Release 重复副本）----
+[[source]]
+project = "pcrt"
+aliases = ["pointcloudrecordingandplaybacktool", "录制回放", "点云录制"]
+root = "/home/sti/project/pointcloudrecordingandplaybacktool"
+include = ["src", "doc", "config", "test", "README.md", "CHANGELOG.md", "CMakeLists.txt", "configure_linux.sh"]
+
+[[source]]
+project = "rsviewpro"
+aliases = ["rsview", "RSView"]
+root = "/home/sti/project/rsviewpro"
+include = ["src", "docs", "Docs", "scripts", "tests", "README.md", "CLAUDE.md", "CMakeLists.txt", "package_linux.sh", "rebuild.sh"]
+
+[[source]]
+project = "safeparamtool"
+aliases = ["safe param", "安全参数"]
+root = "/home/sti/project/safeparamtool"
+include = ["src", "doc", "test", "tool", "README.md", "AGENTS.md", "CLAUDE.md", "CMakeLists.txt", "rebuild.sh"]
+
+[[source]]
+project = "udsLibTestTool"
+aliases = ["uds测试工具", "udslib test tool"]
+root = "/home/sti/project/udsLibTestTool"
+include = ["src", "include", "README.md", "CHANGELOG.md", "CMakeLists.txt", "compile_linux.sh", "run_linux.sh"]
+
+[[source]]
+project = "udp_app"
+aliases = ["udp_app_karl", "udp app"]
+root = "/home/sti/project/udp_app_karl"
+include = ["src", "docs", "CMakeLists.txt", "build.sh"]

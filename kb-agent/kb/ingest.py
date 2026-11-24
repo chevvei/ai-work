@@ -93,9 +93,22 @@ def read_text(path):
     return data.decode("utf-8", errors="replace")
 
 
+# 套路：文件级黑名单挡不住“代码里写死的默认密码”，入库前再做一次行内脱敏，保留变量名、只抹掉值
+# 覆盖三种写法：x.passWord = "v"、setPassWord("v")、ini 里的 pc_password = v
+_KEY = r"(?:pass_?word|passwd|pwd|psw|secret|api_?key|access_?key|token)"
+SECRET = re.compile(rf"""(\w*{_KEY}\w*\s*(?:[:=]|\()\s*)(["'])[^"'\n]{{3,}}\2""", re.I)
+SECRET_INI = re.compile(rf"""^(\s*\w*{_KEY}\w*\s*[:=]\s*)([^\s"'][^\n]*)$""", re.I | re.M)
+# 注释/日志里的自然语言写法：“默认密码为 "123456"”“password to 123456”
+SECRET_PROSE = re.compile(r"""((?:密码|password)\s*(?:为|是|to|is)\s*\\?["']?)[^\s"'\\)]{3,}""", re.I)
+
+
+def redact(text):
+    return SECRET_PROSE.sub(r"\1***", SECRET_INI.sub(r"\1***", SECRET.sub(r"\1\2***\2", text)))
+
+
 def _make(project, rel, start, end, kind, title, text):
     cid = hashlib.sha1(f"{project}:{rel}:{start}:{end}".encode()).hexdigest()[:16]
-    return Chunk(cid, project, rel, start, end, kind, title, text.strip("\n"))
+    return Chunk(cid, project, rel, start, end, kind, title, redact(text.strip("\n")))
 
 
 def _is_code_boundary(line):
