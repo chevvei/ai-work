@@ -251,12 +251,19 @@ grep -oE 'setPassWord\\(\\\\"\\*\\*\\*\\\\"\\)' index/chunks.jsonl | head -1   #
 <p><strong>以前的问题：</strong>①只看 refusal_ok，看不出模型是不是“逢题就拒”；②拒答 val 只有 5 条，0.8 的意思是 4/5，置信区间很宽；③每改一次打分规则就重跑 11 分钟生成，很浪费。</p>
 <table><tr><th>补强</th><th>做法</th><th>命令</th></tr>
 <tr><td>误拒率 over_refusal</td><td>正常题回答里出现“没有找到”就记一次误拒，和 refusal_ok 放在一起看</td><td>默认输出</td></tr>
-<tr><td>扩充拒答集</td><td>把 val 的 63 道正常题各派生一道拒答题：问题不变，把源文件的<strong>所有块</strong>都从证据里删掉（只删源块不够，同文件的相邻块往往也含答案）。拒答样本从 5 条增加到 63 条（58 条派生；另有 5 题删掉源文件后证据为空，跳过），干扰证据仍然来自真实检索，难度高于随便塞几块无关内容</td><td><code>eval_lora --extra-refusal</code>（约 20 分钟）</td></tr>
-<tr><td>只看样本构成</td><td>不加载模型，打印 answer/refusal 条数</td><td><code>eval_lora --extra-refusal --dry-run</code> → <code>{"answer": 63, "refusal": 63}</code></td></tr>
+<tr><td>扩充拒答集</td><td>把 val 的 63 道正常题各派生一道拒答题：问题不变，把源文件的<strong>所有块</strong>都从证据里删掉（只删源块不够，同文件的相邻块往往也含答案）。拒答样本从 5 条增加到 59 条（54 条派生；另有 9 题删掉源文件后证据为空，跳过），干扰证据仍然来自真实检索，难度高于随便塞几块无关内容</td><td><code>eval_lora --extra-refusal</code>（约 20 分钟）</td></tr>
+<tr><td>只看样本构成</td><td>不加载模型，打印 answer/refusal 条数</td><td><code>eval_lora --extra-refusal --dry-run</code> → <code>{"answer": 63, "refusal": 59}</code></td></tr>
 <tr><td>离线重算</td><td>读取已保存的 base/lora 回答，按新规则重新打分并写回日志</td><td><code>eval_lora --rescore logs/eval_lora_X.json</code>（约 1 秒）</td></tr></table>
+<p><strong>扩充集实测结果</strong>（<code>logs/eval_lora_20261124_121006.json</code>，122 条，用时 930 s）：</p>
+<table><tr><th>指标</th><th>底座</th><th>+LoRA</th><th>验收</th></tr>
+<tr><td>refusal_ok（59 条拒答题）</td><td>0.119</td><td>0.746</td><td>✓ 明显优于底座</td></tr>
+<tr><td>over_refusal（63 条正常题）</td><td>0.0</td><td>0.048</td><td>✓ ≤ 5%</td></tr>
+<tr><td>cites_source</td><td>0.556</td><td>0.683</td><td>✓</td></tr>
+<tr><td>code_faithful</td><td>0.921</td><td>0.968</td><td>✓</td></tr></table>
+<p><strong>标签噪声：</strong>LoRA 有 14 道派生拒答题没有拒答。逐条检查后发现，其中 13 道的剩余证据里仍然有答案，例如源块在 <code>diagconfig.h</code>，证据里还留着 <code>diagconfig.cpp</code>；源块在说明文档里，证据里还留着对应的代码文件。对这 13 道题来说，模型给出带引用的回答反而是对的。所以 0.746 是<strong>偏低的保守值</strong>，扣除噪声后约为 44/46≈0.96。底座的 0.119 同样受噪声影响，但两边的差距足够大，结论不受影响。<em>套路：自动派生的负样本一定要抽检“失败”的样本。失败样本里最容易混进标签错误，模型在这些题上“答错”，往往是对的。</em></p>
 <p><em>套路：评测日志要保存原始回答，不能只存分数。打分规则一定会改，只要回答还在，重算只需要 1 秒。</em>流水线里用 <code>EVAL_ARGS=--extra-refusal bash scripts/run_pipeline_ubuntu2004.sh evallora</code> 透传参数。</p></details>
 <details><summary><span class="eye" aria-hidden="true"></span>展开：下一轮迭代清单（按收益排序）</summary><ol>
-<li><strong>跑扩充拒答集</strong>：先确认 refusal_ok 在 63 条上仍明显优于底座，同时 over_refusal 不超过 5%。两条都满足，才算拒答能力真的学会了。</li>
+<li><s><strong>跑扩充拒答集</strong></s> ✓ 已完成（见上方结果）。剩余工作：派生拒答题时，把同名文件（foo.h 和 foo.cpp）以及引用了同一符号的文档也一起删掉，减少标签噪声，然后重跑。</li>
 <li><strong>修造题 prompt</strong>：禁止“X 没有被正确更新，会导致什么问题”这种断言式问法。已经造出来的假前提题挑出来人工写“纠正前提”的答案，然后放回训练集。</li>
 <li><strong>补人工校对</strong>：review.md 只抽了 30 条：20 条自动校验通过被预填为 ok，10 条 todo 还没人看，人工 fix 为 0。优先处理这 10 条，再补校对 self_lineno 命中的样本和误拒样本，人工 fix 的样本会绕过自动过滤进入训练。</li>
 <li><strong>拒答比例</strong>：拒答训练样本目前约占 15%（45/291）。如果扩充集上误拒率升高，先把造拒答的频率从 1/10 降到 1/15，再重训。</li>
