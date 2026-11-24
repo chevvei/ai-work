@@ -63,27 +63,35 @@ class KnowledgeAgent:
     def __init__(self, retriever, llm, k=8, max_steps=3):
         self.retriever, self.llm, self.k, self.max_steps = retriever, llm, k, max_steps
 
-    def ask(self, question, project=None, mode="rag"):
+    def ask(self, question, project=None, mode="rag", on_event=None):
+        """on_event(dict)：流式事件。status=进度提示；token=答案片段；reset=答案作废重来（补引用时）。"""
+        emit = on_event or (lambda e: None)
         t0 = time.time()
+        emit({"type": "status", "text": "正在检索资料"})
         evidence = self.retriever.search(question, k=self.k, project=project)
         trace = [{"step": "search", "query": question, "hits": len(evidence)}]
         if mode == "agent":
-            evidence, trace = self._agent_loop(question, evidence, project, trace)
+            emit({"type": "status", "text": f"已找到 {len(evidence)} 段资料，正在判断是否需要补充"})
+            evidence, trace = self._agent_loop(question, evidence, project, trace, emit)
+        emit({"type": "status", "text": f"已阅读 {len(evidence)} 段资料，正在生成回答"})
+        tok = (lambda s: emit({"type": "token", "text": s})) if on_event else None
         messages = [{"role": "system", "content": SYSTEM},
                     {"role": "user", "content": f"【资料】\n{format_evidence(evidence)}\n\n【问题】{question}{ANSWER_TAIL}"}]
-        answer = self.llm.chat(messages)
+        answer = self.llm.chat(messages, on_token=tok)
         cites = check_citations(answer, len(evidence))
         if evidence and not cites["cited"]:
             # 套路：提示词约束是“软”的，程序校验是“硬”的。没引用就把原回答发回去要求补引用，只重试一次
             trace.append({"step": "recite"})
+            emit({"type": "reset", "text": "正在补充出处"})
             answer = self.llm.chat(messages + [{"role": "assistant", "content": answer}, {"role": "user", "content":
-                                   "上面的回答缺少出处。请保持内容不变，在每个结论句末补上对应的资料编号 [n]；找不到出处的句子删掉。"}])
+                                   "上面的回答缺少出处。请保持内容不变，在每个结论句末补上对应的资料编号 [n]；找不到出处的句子删掉。"}],
+                                   on_token=tok)
             cites = check_citations(answer, len(evidence))
         return {"question": question, "answer": answer, "sources": source_list(evidence, cites["cited"]),
                 "invalid_citations": cites["invalid"], "evidence": [f"{c.project}/{c.path}:{c.start}-{c.end}" for c in evidence],
                 "trace": trace, "seconds": round(time.time() - t0, 2), "usage": getattr(self.llm, "last_usage", {})}
 
-    def _agent_loop(self, question, evidence, project, trace):
+    def _agent_loop(self, question, evidence, project, trace, emit=lambda e: None):
         for _ in range(self.max_steps):
             messages = [{"role": "system", "content": SYSTEM + AGENT_RULE},
                         {"role": "user", "content": f"【资料】\n{format_evidence(evidence, 1200)}\n\n【问题】{question}\n"
@@ -105,6 +113,7 @@ class KnowledgeAgent:
             known = {(c.project, c.path, c.start) for c in evidence}
             new = [c for c in new if (c.project, c.path, c.start) not in known]
             trace.append({"step": tool, "arg": arg, "added": len(new)})
+            emit({"type": "status", "text": f"{'补充检索' if tool == 'search' else '阅读代码'}：{arg[:40]}（新增 {len(new)} 段）"})
             evidence = evidence + new
             if len(evidence) >= self.k + 6:  # 证据上限：上下文越长，小模型越容易“看漏”
                 break

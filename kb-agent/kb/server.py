@@ -19,7 +19,7 @@ REBUILD_FILES = ("vectors.faiss", "vec_keys.json", "manifest.json")
 def serve(args, retriever, llm):
     import uvicorn
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
-    from fastapi.responses import HTMLResponse
+    from fastapi.responses import HTMLResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel, Field
 
@@ -86,19 +86,58 @@ def serve(args, retriever, llm):
 
     @app.post("/api/ask")
     def ask(req: Ask, request: Request, client: str = Depends(client_id)):
-        if req.project and req.project not in {p["name"] for p in visible_projects()}:
-            raise HTTPException(400, "该项目未开放")
-        mode = req.mode if store.settings["allow_agent_mode"] else "rag"
+        mode = check_ask(req)
         if not gpu.acquire(timeout=300):
             raise HTTPException(503, "当前提问人数较多，请稍后再试")
         try:
             res = agent.ask(req.question.strip(), project=req.project or None, mode=mode)
         finally:
             gpu.release()
+        return finish_ask(req, request, client, mode, res)
+
+    def check_ask(req):
+        if req.project and req.project not in {p["name"] for p in visible_projects()}:
+            raise HTTPException(400, "该项目未开放")
+        return req.mode if store.settings["allow_agent_mode"] else "rag"
+
+    def finish_ask(req, request, client, mode, res):
         qa_id = store.add_qa(client, request.client.host if request.client else "", req.question.strip(), req.project, mode, res)
         if "没有找到" in res["answer"]:
             auto_queue("miss", store.get_qa(qa_id), "模型回答“资料中没有找到”")
         return public_qa(store.get_qa(qa_id), client)
+
+    @app.post("/api/ask_stream")
+    def ask_stream(req: Ask, request: Request, client: str = Depends(client_id)):
+        """SSE 流式问答：status（进度）/ token（答案片段）/ reset（补引用重来）/ done（最终记录，含出处）/ error。
+        套路：生成在工作线程里跑，事件经队列交给响应生成器；排队也作为事件推给前端，用户知道“在等什么”。"""
+        import queue
+        mode = check_ask(req)
+        q = queue.Queue()
+
+        def work():
+            try:
+                if not gpu.acquire(blocking=False):
+                    q.put({"type": "status", "text": "前面有人在提问，排队中…"})
+                    if not gpu.acquire(timeout=300):
+                        q.put({"type": "error", "text": "当前提问人数较多，请稍后再试"})
+                        return
+                try:
+                    res = agent.ask(req.question.strip(), project=req.project or None, mode=mode, on_event=q.put)
+                finally:
+                    gpu.release()
+                q.put({"type": "done", "qa": finish_ask(req, request, client, mode, res)})
+            except Exception as e:  # 线程里的异常不会传到响应里，必须显式转成事件
+                q.put({"type": "error", "text": f"生成失败：{e}"})
+            finally:
+                q.put(None)
+
+        threading.Thread(target=work, daemon=True).start()
+
+        def events():
+            while (e := q.get()) is not None:
+                yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     def auto_queue(origin, d, note):
         """系统自己发现的“不会的题”进审核队列：证据前 3 条作候选出处，管理员改两笔就能通过。
