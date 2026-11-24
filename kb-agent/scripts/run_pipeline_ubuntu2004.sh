@@ -4,6 +4,7 @@
 #   bash kb-agent/scripts/run_pipeline_ubuntu2004.sh all        # RAG + 造数据 + QLoRA + 评测
 #   bash kb-agent/scripts/run_pipeline_ubuntu2004.sh data train evallora   # 只跑指定阶段
 #   bash kb-agent/scripts/run_pipeline_ubuntu2004.sh serve      # 部署：带 LoRA（若存在）的网页问答
+#   EVAL_ARGS=--extra-refusal bash kb-agent/scripts/run_pipeline_ubuntu2004.sh evallora   # 扩充拒答集再评测
 # 阶段：test ingest index eval ask data train evallora serve
 set -euo pipefail
 
@@ -37,7 +38,7 @@ run_stage() {
         "$PY" -m finetune.make_data --n "$N" --seed "$s" $extra 2>&1 | tee "logs/make_data_seed${s}_$STAMP.log" | grep -E "^\{|BAD" | tail -n 3
       done ;;
     train)  step "QLoRA 训练"; gpu_free; "$PY" -m finetune.train_qlora 2>&1 | tee "logs/train_qlora_$STAMP.log" | grep -E "^\[(data|done)\]" ;;
-    evallora) step "底座 vs LoRA 对比"; gpu_free; "$PY" -m finetune.eval_lora > "logs/eval_lora_$STAMP.log" 2>&1; grep -v "^\[" "logs/eval_lora_$STAMP.log" | sed -n '/^{/,$p' ;;
+    evallora) step "底座 vs LoRA 对比 ${EVAL_ARGS:-}"; gpu_free; "$PY" -m finetune.eval_lora ${EVAL_ARGS:-} > "logs/eval_lora_$STAMP.log" 2>&1; grep -v "^\[" "logs/eval_lora_$STAMP.log" | sed -n '/^{/,$p' ;;
     serve)
       step "部署网页问答 http://127.0.0.1:$PORT"
       if [ -d "$LORA" ]; then exec "$PY" -m kb.cli --lora "$LORA" serve --port "$PORT"

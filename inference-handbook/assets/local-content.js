@@ -139,8 +139,15 @@ ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream)</code></pre><p>直
 <tr><td>cites_source 引用到真正源块</td><td>0.556</td><td><strong>0.683</strong></td></tr>
 <tr><td>code_faithful 代码原样摘抄</td><td>0.921</td><td><strong>0.968</strong></td></tr>
 <tr><td>refusal_ok 证据不足时拒答</td><td>0.0</td><td><strong>0.8</strong></td></tr>
-<tr><td>self_lineno 自写行号（越低越好）</td><td>0.0</td><td>0.016</td></tr></table>
+<tr><td>self_lineno 自写行号（越低越好）</td><td>0.0</td><td>0.016</td></tr>
+<tr><td>over_refusal 正常题误拒（越低越好，事后补算）</td><td>0.0</td><td>0.048</td></tr></table>
 <p><strong>怎么读这张表：</strong>收益最大的是拒答，从 0/5 提升到 4/5，这正是提示词教不会、而样本能教会的行为。引用准确率提升 12.7 个点。注意拒答 val 只有 5 条，结论还需要扩大样本复核。另外 self_lineno 出现了 1 例回归，下一轮应把这类样本补进人工校对清单。底座和 LoRA 共用同一份 4bit 权重，底座结果通过 <code>disable_adapter()</code> 得到，所以对比只差在 LoRA 本身。</p>
+<p><strong>补算误拒率：拒答能力提升，有没有拿“乱拒答”换来？</strong>第一版评测只统计了 refusal_ok，没有统计正常题被拒答的比例。只看前者会鼓励模型“全部拒答”。补上 over_refusal 后，用已保存的回答离线重算（<code>eval_lora --rescore</code>，不占 GPU），LoRA 在 63 条正常题里拒答了 3 条。逐条看：</p>
+<table><tr><th>题目</th><th>底座</th><th>LoRA</th><th>判定</th></tr>
+<tr><td>sync_queue.hpp 用的是什么许可证？</td><td>3-clause BSD（正确）</td><td>没有找到</td><td>✗ 真误拒</td></tr>
+<tr><td>internDecodeMsopPkt 里 pkt_ts 初始化为 0 但后续没赋值，会导致什么问题？</td><td>顺着题目的说法往下编</td><td>没有找到</td><td>△ 题目前提可疑</td></tr>
+<tr><td>StringSplit 的 token 在循环结束后没有正确更新，会导致什么问题？</td><td>顺着题目的说法往下编</td><td>没有找到</td><td>△ 题目前提可疑</td></tr></table>
+<p>后两题是造题模型自己写出来的<strong>诱导式问题</strong>：题目先断言“有 bug”，再问后果。底座会顺着前提编下去，LoRA 选择了拒答。拒答比编造好，但更理想的回答是“资料中的代码显示……，与题目的前提不一致 [n]”。<em>套路：自动造题会产生假前提题。造题 prompt 要禁止“断言式”问法，或者把这类题单独归为“纠正前提”类别并配人工答案。</em>严格算，真误拒是 1/63≈1.6%，可以接受。</p>
 <pre><code>$PY -m finetune.make_data --n 300 --seed 1           # 生成 drafts.jsonl + review.md
 $PY -m finetune.make_data --n 300 --seed 2 --append  # 换 seed 扩量
 $PY -m finetune.train_qlora                          # out/lora + logs/train_*.json
@@ -155,14 +162,14 @@ $PY -m kb.cli search "doipClient 发送诊断请求"
 $PY -m kb.cli ask "udslib 在 Linux 下如何编译？"
 $PY -m kb.cli ask "monitor 的心跳是怎么实现的？" --mode agent
 $PY -m kb.cli serve                        # 浏览器打开 http://127.0.0.1:8770
-$PY -m pytest -q tests                     # 切块/分词/RRF/去重/引用校验单测</code></pre></details>
+$PY -m pytest -q tests                     # 切块/分词/RRF/去重/引用校验 + 微调数据切分/loss 掩码/打分单测</code></pre></details>
 <div class="checks"><strong>自查</strong><ul><li>能说清为什么先 RAG 后微调，以及 24GB 能做哪些训练</li><li>能解释 BM25 和向量检索各自擅长什么、RRF 为什么不用归一化</li><li>能拿出评测集数字证明某个优化有效</li><li>能说出至少三条防幻觉手段</li></ul></div>
 `},
 {id:'local-kb-tutorial',title:'22 · 实战教程：从零部署知识库 Agent + QLoRA（一键脚本版）',subtitle:'第 20、21 章是“踩坑记录”，本章是“照着做就能复现”的部署手册：每一步都有命令、预期输出、验收标准和本机实测耗时。',priority:'P0',body:`
 <div class="callout"><strong>一句话：两个脚本、九个阶段，从一台装好驱动的 Ubuntu 机器，做到浏览器里能问“udslib 怎么编译”并拿到带出处的回答。</strong>所有数字都来自本机（RTX 3090 Ti 24GB / 驱动 570 / Ubuntu 20.04），日志在 <code>kb-agent/logs/</code>。</div>
 <h3>全景：九个阶段分别产出什么</h3>
 <figure class="diagram"><pre class="mermaid">flowchart LR
- E[setup_env<br/>venv+依赖+模型] --> T[test<br/>8 个单测]
+ E[setup_env<br/>venv+依赖+模型] --> T[test<br/>15 个单测]
  T --> I[ingest<br/>切块+脱敏]
  I --> X[index<br/>bge-m3 向量]
  X --> V[eval<br/>recall/MRR]
@@ -175,7 +182,7 @@ $PY -m pytest -q tests                     # 切块/分词/RRF/去重/引用校�
  EL -. 无收益 .-> S2[serve 不带 LoRA]</pre><figcaption>图 22-1：阶段间有“门禁”。检索评测不过，不进入生成；LoRA 没收益，就不上线 LoRA</figcaption></figure>
 <table><tr><th>阶段</th><th>命令（在 kb-agent/ 下）</th><th>产物</th><th>验收标准</th><th>本机耗时</th></tr>
 <tr><td>0 环境</td><td><code>bash scripts/setup_env_ubuntu2004.sh</code></td><td>~/venvs/gpu、~/models</td><td>最后一行打印 OK + 显卡名</td><td>首次约 1 小时（主要是下载 15GB 模型）</td></tr>
-<tr><td>1 test</td><td rowspan="5"><code>bash scripts/run_pipeline_ubuntu2004.sh</code></td><td>—</td><td>8 passed</td><td>&lt;1 s</td></tr>
+<tr><td>1 test</td><td rowspan="5"><code>bash scripts/run_pipeline_ubuntu2004.sh</code></td><td>—</td><td>15 passed</td><td>&lt;1 s</td></tr>
 <tr><td>2 ingest</td><td>index/chunks.jsonl</td><td>10 个项目都有块，敏感值残留为 0</td><td>11310 块</td></tr>
 <tr><td>3 index</td><td>index/vectors.faiss</td><td>块数与 chunks 一致</td><td>70.7 s</td></tr>
 <tr><td>4 eval</td><td>logs/eval_*.json</td><td>recall@8 ≥ 0.9</td><td>数秒，0.955 / MRR 0.752</td></tr>
@@ -207,7 +214,7 @@ include = ["src", "demo", "tests", "docs", "README.md", "CMakeLists.txt"]   # �
 grep -oE 'setPassWord\\(\\\\"\\*\\*\\*\\\\"\\)' index/chunks.jsonl | head -1   # 期望 setPassWord(\\"***\\")</code></pre>
 <p>实测效果：部署后在网页上问“pcrt 的 pc_password 默认值是多少？”，回答“资料中没有找到与该问题直接相关的内容”（2.39 s），密码不会通过问答泄露。</p></details>
 <details><summary><span class="eye" aria-hidden="true"></span>展开：每一步的预期输出与常见失败</summary><table><tr><th>步骤</th><th>预期输出（本机）</th><th>失败现象 → 原因 → 处理</th></tr>
-<tr><td>test</td><td><code>8 passed</code></td><td>ImportError → 用了系统 python，确认 <code>PY=~/venvs/gpu/bin/python</code></td></tr>
+<tr><td>test</td><td><code>15 passed</code></td><td>ImportError → 用了系统 python，确认 <code>PY=~/venvs/gpu/bin/python</code></td></tr>
 <tr><td>ingest</td><td>每个项目的 files/chunks 统计 JSON</td><td>某项目 0 块 → root 路径错，或 include 子目录名大小写不对（docs/Docs）</td></tr>
 <tr><td>index</td><td><code>向量化 11310 块，用时 70.7s</code></td><td>CUDA OOM → 有 serve 进程占着显存；脚本里的 gpu_free 会拦下这种情况</td></tr>
 <tr><td>eval</td><td><code>recall@8 0.955, mrr 0.752</code></td><td>新加项目后 recall 下降 → 看 MISS 题的 top1，通常是新项目的文档抢了名额，给它加 aliases 或排除噪声目录</td></tr>
@@ -238,7 +245,22 @@ grep -oE 'setPassWord\\(\\\\"\\*\\*\\*\\\\"\\)' index/chunks.jsonl | head -1   #
 <tr><td>引用到真正源块</td><td>0.556</td><td>0.683</td><td>✓ 提升</td></tr>
 <tr><td>证据不足时拒答（5 条）</td><td>0.0</td><td>0.8</td><td>✓ 提升，但样本少</td></tr>
 <tr><td>代码原样摘抄</td><td>0.921</td><td>0.968</td><td>✓</td></tr>
-<tr><td>自写行号（越低越好）</td><td>0.0</td><td>0.016</td><td>⚠ 1 例回归，进入下一轮校对</td></tr></table>
+<tr><td>自写行号（越低越好）</td><td>0.0</td><td>0.016</td><td>⚠ 1 例回归，进入下一轮校对</td></tr>
+<tr><td>正常题误拒（越低越好）</td><td>0.0</td><td>0.048</td><td>⚠ 3 例，其中 2 例是假前提题，真误拒 1 例</td></tr></table>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：评测补强——误拒率、扩充拒答集、离线重算</summary>
+<p><strong>以前的问题：</strong>①只看 refusal_ok，看不出模型是不是“逢题就拒”；②拒答 val 只有 5 条，0.8 的意思是 4/5，置信区间很宽；③每改一次打分规则就重跑 11 分钟生成，很浪费。</p>
+<table><tr><th>补强</th><th>做法</th><th>命令</th></tr>
+<tr><td>误拒率 over_refusal</td><td>正常题回答里出现“没有找到”就记一次误拒，和 refusal_ok 放在一起看</td><td>默认输出</td></tr>
+<tr><td>扩充拒答集</td><td>把 val 的 63 道正常题各派生一道拒答题：问题不变，把源文件的<strong>所有块</strong>都从证据里删掉（只删源块不够，同文件的相邻块往往也含答案）。拒答样本从 5 条增加到 63 条（58 条派生；另有 5 题删掉源文件后证据为空，跳过），干扰证据仍然来自真实检索，难度高于随便塞几块无关内容</td><td><code>eval_lora --extra-refusal</code>（约 20 分钟）</td></tr>
+<tr><td>只看样本构成</td><td>不加载模型，打印 answer/refusal 条数</td><td><code>eval_lora --extra-refusal --dry-run</code> → <code>{"answer": 63, "refusal": 63}</code></td></tr>
+<tr><td>离线重算</td><td>读取已保存的 base/lora 回答，按新规则重新打分并写回日志</td><td><code>eval_lora --rescore logs/eval_lora_X.json</code>（约 1 秒）</td></tr></table>
+<p><em>套路：评测日志要保存原始回答，不能只存分数。打分规则一定会改，只要回答还在，重算只需要 1 秒。</em>流水线里用 <code>EVAL_ARGS=--extra-refusal bash scripts/run_pipeline_ubuntu2004.sh evallora</code> 透传参数。</p></details>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：下一轮迭代清单（按收益排序）</summary><ol>
+<li><strong>跑扩充拒答集</strong>：先确认 refusal_ok 在 63 条上仍明显优于底座，同时 over_refusal 不超过 5%。两条都满足，才算拒答能力真的学会了。</li>
+<li><strong>修造题 prompt</strong>：禁止“X 没有被正确更新，会导致什么问题”这种断言式问法。已经造出来的假前提题挑出来人工写“纠正前提”的答案，然后放回训练集。</li>
+<li><strong>补人工校对</strong>：review.md 只抽了 30 条：20 条自动校验通过被预填为 ok，10 条 todo 还没人看，人工 fix 为 0。优先处理这 10 条，再补校对 self_lineno 命中的样本和误拒样本，人工 fix 的样本会绕过自动过滤进入训练。</li>
+<li><strong>拒答比例</strong>：拒答训练样本目前约占 15%（45/291）。如果扩充集上误拒率升高，先把造拒答的频率从 1/10 降到 1/15，再重训。</li>
+<li><strong>形态 C 实测</strong>：本机还没装 vLLM。merge_and_unload 之后，用 vLLM 起服务，并用同一份 val 对比合并前后的指标。合并到 BF16 底座会和 4bit 训练产生精度差，必须重新评测才能上线。</li></ol></details>
 <h3>第 9 步：部署上线</h3>
 <details open><summary><span class="eye" aria-hidden="true"></span>展开：三种部署形态怎么选</summary><table><tr><th>形态</th><th>命令</th><th>显存</th><th>适用</th><th>本机</th></tr>
 <tr><td>A. transformers + LoRA 适配器（默认）</td><td><code>python -m kb.cli --lora finetune/out/lora serve</code></td><td>约 17.6GB（BF16 底座 + 39MB 适配器）</td><td>个人或小团队、单卡、串行请求</td><td>✓ 已验证：ask 4.19 s</td></tr>
