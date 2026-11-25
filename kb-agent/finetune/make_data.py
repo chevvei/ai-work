@@ -30,7 +30,7 @@ REFUSAL = "资料中没有找到与该问题直接相关的内容。"
 SELF_LINENO = re.compile(r"第\s*\d+\s*行|L\d+-L?\d+|\.(cpp|h|hpp|md|py):\d+")
 
 ASK_PROMPT = """下面是 {project} 项目的一段资料。假设你是刚加入团队的开发者，针对这段资料提出一个具体、可回答的问题。
-要求：问题里带上项目名 {project}；不要出现“这段代码”“上面”之类指代；只输出问题本身，不超过 40 字。
+要求：问题里带上项目名 {project}；不要出现“这段代码”“上面”之类指代；问功能、流程、参数含义或排查方法，不要问版权、作者、注释、头文件包含；只输出问题本身，不超过 40 字。
 
 【资料】{path}
 ```
@@ -71,11 +71,20 @@ def main():
     ap.add_argument("--review", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--append", action="store_true", help="追加到已有 drafts.jsonl（换 seed 扩量，已造过题的源块跳过）")
+    ap.add_argument("--api-base", help="改用已在跑的 vLLM（如 http://127.0.0.1:8001/v1），夜间和线上服务共用一张卡")
+    ap.add_argument("--api-model", default="kb")
+    ap.add_argument("--embed-device", default="cuda", help="vLLM 占着显存时用 cpu：索引向量已算好，只需编码问题")
     args = ap.parse_args()
 
     DATA.mkdir(parents=True, exist_ok=True)
-    retriever = Retriever(ROOT / "index")
-    llm = TransformersLLM(str(DEFAULT_LLM))
+    from kb.cli import DEFAULT_EMBED
+    from kb.retrieve import Embedder
+    retriever = Retriever(ROOT / "index", embedder=Embedder(DEFAULT_EMBED, device=args.embed_device))
+    if args.api_base:
+        from kb.llm import OpenAICompatLLM
+        llm = OpenAICompatLLM(args.api_base, args.api_model)
+    else:
+        llm = TransformersLLM(str(DEFAULT_LLM))
     rows, stats, t0 = [], defaultdict(int), time.time()
     if args.append and (DATA / "drafts.jsonl").exists():
         rows = [json.loads(line) for line in open(DATA / "drafts.jsonl", encoding="utf-8")]
@@ -104,10 +113,13 @@ def main():
                      "messages": build_messages(q, evidence), "answer": answer, "check": check, "auto_ok": ok, "status": "todo"})
         print(f"[{i + 1}/{args.n}] {'OK ' if ok else 'BAD'} {q}", flush=True)
 
-    with open(DATA / "drafts.jsonl", "w", encoding="utf-8") as f:
-        for r in rows:
+    # 套路：追加模式只 append 新行，不整文件重写——两个造数进程并发时，后写完的不会覆盖先写完的
+    new_rows = [r for r in rows if r.get("source_id") not in seen] if args.append else rows
+    with open(DATA / "drafts.jsonl", "a" if args.append else "w", encoding="utf-8") as f:
+        for r in new_rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    write_review(rows[:args.review], retriever)
+    if args.review:  # 0 = 不动 review.md（夜间追加时保护人工已校对的清单）
+        write_review(rows[:args.review], retriever)
     stats.update(kept=len(rows), seconds=round(time.time() - t0, 1))
     print(json.dumps(stats, ensure_ascii=False))
 
