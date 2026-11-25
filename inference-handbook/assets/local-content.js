@@ -6,8 +6,8 @@ window.HANDBOOK_LOCAL = [
 <figure class="diagram"><pre class="mermaid">flowchart LR
  D[显卡驱动 570.133<br/>决定最高 CUDA 12.8] --> R[torch 轮子自带的运行时<br/>cudart/cublas/cudnn]
  R --> T[torch 2.6.0+cu124 ✓]
- D -.不满足.-> X[torch +cu130 ✗<br/>需驱动 ≥580]
- N[系统 nvcc 12.4] -.只在自己编译 .cu/插件时用.-> P[TensorRT 插件 / 自定义算子]</pre><figcaption>图 20-1：驱动是“上限”，pip 轮子自带运行时，系统 nvcc 只服务于自己编译</figcaption></figure>
+ D -.->|"不满足"| X[torch +cu130 ✗<br/>需驱动 ≥580]
+ N[系统 nvcc 12.4] -.->|"只在自己编译 .cu/插件时用"| P[TensorRT 插件 / 自定义算子]</pre><figcaption>图 20-1：驱动是“上限”，pip 轮子自带运行时，系统 nvcc 只服务于自己编译</figcaption></figure>
 <details><summary><span class="eye" aria-hidden="true"></span>展开：三个“CUDA 版本”各管什么</summary><table><tr><th>你看到的版本</th><th>来源</th><th>作用</th><th>本机</th></tr><tr><td>nvidia-smi 右上角 CUDA Version</td><td>驱动</td><td>能支持的<strong>最高</strong>运行时版本</td><td>12.8（驱动 570）</td></tr><tr><td>nvcc --version</td><td>系统 CUDA Toolkit</td><td>编译 .cu、TensorRT 插件</td><td>12.4</td></tr><tr><td>torch.version.cuda</td><td>pip 轮子自带</td><td>PyTorch 实际用的运行时</td><td>12.4（cu124）</td></tr></table><p>工程套路：<strong>选轮子时只看驱动上限</strong>，运行时版本 ≤ 驱动支持版本即可；不要为了 pip 装 torch 去重装系统 CUDA。面试常问“驱动和 toolkit 的关系”，就答这张表。</p></details>
 <h3>问题 2：为什么用独立 venv 而不是 Docker？</h3>
 <p>Docker 是交付标准，但本机 docker 还没注册 nvidia runtime（需要 sudo 执行 <code>nvidia-ctk runtime configure --runtime=docker</code> 后重启 docker）。学习阶段用 venv：零 sudo、删掉目录即可回滚、与系统 python3.8 互不干扰。</p>
@@ -293,5 +293,340 @@ curl -s -X POST 127.0.0.1:8770/api/ask -H 'Content-Type: application/json' \\
 <tr><td>LoRA 版本拒答过多</td><td>evallora 里正常题的 has_cite</td><td>拒答样本占比太高，从 1/10 降到 1/15</td></tr>
 <tr><td>后台日志长时间不更新</td><td>是否被管道缓冲</td><td>python -u 或 print(flush=True)，用 nvidia-smi 看 GPU 是否在跑</td></tr></table></details>
 <div class="checks"><strong>自查</strong><ul><li>能在一台新机器上只用两个脚本复现到 serve</li><li>能说出每个阶段的验收标准，以及哪一步是门禁</li><li>能解释为什么 val 要在过滤前切、max_len 怎么定</li><li>能说清 A/B/C 三种部署形态的取舍，以及 LoRA 的回滚方式</li></ul></div>
+`},
+{id:'local-kb-service',title:'23 · 知识库 Agent 上线：技术架构、模型放哪、为什么不训练也能学会',subtitle:'第 21、22 章把它做成了命令行工具，本章讲它怎么变成局域网里大家都能用的产品：架构分层、模型与数据的存放位置、“学习闭环”为什么不需要重新训练，以及流式输出、停止生成、追问建议这些交互背后的工程做法。',priority:'P0',body:`
+<div class="callout"><strong>一句话：知识放在“索引”里，不放在“权重”里。</strong>模型只负责“读资料、组织语言、标出处”，公司代码和文档切成块存进向量索引。新知识进来时，卡片审核通过后会自动增量入库并热切换索引，几分钟内生效，不需要重新训练。QLoRA 只用来教模型“怎么回答”（格式、引用、何时拒答），不负责“记住知识”。</div>
+
+<h3>23.1 技术架构：五层，各管一件事</h3>
+<figure class="diagram"><pre class="mermaid">flowchart TB
+ subgraph 前端[前端]
+  U[chat.html：提问 / 停止 / 追问 / 点赞 / 纠错]
+ end
+ subgraph 服务[FastAPI server.py :8770]
+  S1["/api/ask_stream（SSE）"]
+  S2["/api/stop"]
+  S3["/api/admin：审核·卡片·入库"]
+  L[("GPU 锁：生成串行")]
+ end
+ subgraph 编排[agent.py]
+  A1[检索] --> A2[拼证据 + 提示词] --> A3[生成] --> A4[引用校验 / 补引用] --> A5[追问建议]
+ end
+ subgraph 检索[retrieve.py]
+  R1[BM25 关键词] & R2[bge-m3 向量 FAISS] --> R3[RRF 融合] --> R4[bge-reranker 重排]
+ end
+ subgraph 存储[磁盘]
+  D1[("index/ 12988 块")]
+  D2[("data/kb.db 问答·反馈·投票")]
+  D3[("知识卡片 Markdown")]
+ end
+ U --> S1 --> L --> A1
+ U --> S2
+ A1 --> R1
+ A3 --> M["Qwen2.5-Coder-7B + LoRA"]
+ R4 --> D1
+ S3 --> D2 & D3</pre><figcaption>图 23-1：从浏览器到 GPU 的完整链路（代码在 kb-agent/kb/）</figcaption></figure>
+<table><tr><th>层</th><th>文件</th><th>职责</th><th>关键设计</th></tr>
+<tr><td>前端</td><td><code>chat.html</code> / <code>admin.html</code></td><td>问答、历史、榜单；后台审核与开关</td><td>单文件、无构建；fetch + ReadableStream 解析 SSE；深浅主题用 CSS 变量</td></tr>
+<tr><td>服务</td><td><code>server.py</code></td><td>HTTP 接口、鉴权、队列</td><td>一把 GPU 锁让生成串行，避免并发把显存打爆；排队状态作为事件推给前端</td></tr>
+<tr><td>编排</td><td><code>agent.py</code></td><td>检索 → 生成 → 校验</td><td>提示词是“软约束”，引用校验是“硬约束”：没引用就打回重写一次</td></tr>
+<tr><td>检索</td><td><code>retrieve.py</code></td><td>找证据</td><td>关键词 + 向量双路召回，RRF 融合，交叉编码器重排；问题里点名项目时只搜该项目</td></tr>
+<tr><td>模型</td><td><code>llm.py</code></td><td>生成文本</td><td>本地 transformers 或 OpenAI 兼容接口（vLLM）二选一，上层代码不改</td></tr>
+<tr><td>存储</td><td><code>store.py</code> / <code>cards.py</code></td><td>问答库、反馈、卡片</td><td>SQLite WAL；旧库启动时用 PRAGMA table_info 检查并补列，不需要迁移脚本</td></tr></table>
+
+<h3>23.2 模型放哪：三个模型 + 一个适配器</h3>
+<table><tr><th>组件</th><th>位置</th><th>磁盘</th><th>作用</th><th>换掉它会怎样</th></tr>
+<tr><td>生成模型 Qwen2.5-Coder-7B-Instruct</td><td><code>~/models/Qwen2.5-Coder-7B-Instruct</code></td><td>15 GB（bf16）</td><td>读证据、写答案</td><td>换更大的模型，答案更通顺；检索不变，出处照样准</td></tr>
+<tr><td>向量模型 bge-m3</td><td><code>~/models/bge-m3</code></td><td>2.2 GB</td><td>把问题和代码块变成向量</td><td>换了必须重建 index/（向量空间不同）</td></tr>
+<tr><td>重排模型 bge-reranker-v2-m3</td><td><code>~/models/bge-reranker-v2-m3</code></td><td>2.2 GB</td><td>对前 30 个候选逐对打分</td><td>不存在时自动跳过，召回率会下降</td></tr>
+<tr><td>QLoRA 适配器</td><td><code>kb-agent/finetune/out/lora</code></td><td>39 MB</td><td>教会“按格式答、带 [n]、不会就说”</td><td>去掉 --lora 就回到原模型，等于一键回滚</td></tr>
+<tr><td>向量索引</td><td><code>kb-agent/index/</code></td><td>68 MB</td><td>12988 个代码/文档块（含代码概要块）+ FAISS</td><td>知识本体；可随时增量重建</td></tr></table>
+<p>模型根目录可以用环境变量 <code>KB_MODELS</code> 改。服务运行时整卡占用约 <strong>19 GB</strong>（3090 Ti 24 GB），主要是 7B 的 bf16 权重加 KV cache。显存紧张时加 <code>--load-4bit</code>，生成模型可降到约 5.5 GB。<em>套路：模型（大、几乎不变）和索引（小、天天变）分开存放，换模型和更新知识互不影响。</em></p>
+
+<h3>23.3 为什么“不用训练”也能学会新知识</h3>
+<details open><summary><span class="eye" aria-hidden="true"></span>先讲之前的想法：把知识“训进”模型</summary>
+<p>直觉是：拿公司代码做微调，模型就“懂”了。实际做下来（第 21、22 章）有三个问题：</p>
+<ul><li><strong>慢</strong>：一轮 QLoRA 要几十分钟到几小时，代码每天在变，训练永远追不上。</li>
+<li><strong>记不准</strong>：7B 模型对函数名、宏的值、行号这类“精确事实”记忆很差，训完反而更自信地编造。</li>
+<li><strong>无法溯源和删除</strong>：知识混在权重里，说不清答案来自哪个文件；某段代码作废了，也没法从权重里“删掉”。</li></ul></details>
+<p><strong>现在的方案</strong>：模型像一个“开卷考试的考生”。每次提问先检索出相关的 8 段资料塞进提示词，模型只照着资料答，并标注 [编号]。知识更新就等于“换一本参考书”：</p>
+<table><tr><th>想让它学会</th><th>怎么做</th><th>多久生效</th><th>要不要 GPU 训练</th></tr>
+<tr><td>新代码、新文档</td><td>后台点“重新入库”（增量切块 + 向量化，热切换索引，不停服务）</td><td>分钟级</td><td>否</td></tr>
+<tr><td>答错或答不出的问题</td><td>点踩 / 答“没有找到”自动进审核队列 → 管理员填正确答案和出处 → 生成知识卡片 → 自动增量入库</td><td>审核通过后分钟级</td><td>否</td></tr>
+<tr><td>同一个问题的不同说法</td><td>卡片的“其他问法”字段，入库时一起向量化</td><td>随卡片入库</td><td>否</td></tr>
+<tr><td>业务说法 ↔ 代码名称（“校验和”↔ CRC32）</td><td>提示词规则 + 代码概要块（离线为每个文件生成“可能的问法”）</td><td>提示词即时；概要随入库</td><td>否</td></tr>
+<tr><td>回答格式、引用习惯、拒答分寸</td><td>QLoRA（唯一需要训练的部分）</td><td>小时级，低频</td><td>是</td></tr></table>
+<p>防止“越学越差”的门禁：<code>kb.cli eval --gate</code> 用带标准出处的题（当前 46 道，含卡片自动生成的回归题）和 <code>logs/eval_baseline.json</code> 比。只要有一道老题从命中变成 MISS，或者 recall@8 下降超过 0.02，就返回退出码 2，新卡片不能上线。当前 recall@8 = 1.0，recall@3 = 0.935（只报告，不作为门禁）。为什么门禁用 recall@8 而不是 recall@3：送进模型的就是前 8 段，排第 2 还是第 5 对答案影响不大；recall@3 容易因为重排的小波动误报。<em>套路：可以学得快，但上线前必须过考试。</em></p>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：RAG 与微调的分工（一张表记住）</summary>
+<table><tr><th></th><th>RAG（检索增强）</th><th>微调（LoRA）</th></tr>
+<tr><td>解决什么</td><td>知道什么（事实、代码、出处）</td><td>怎么说（格式、风格、拒答）</td></tr>
+<tr><td>更新成本</td><td>重新入库，分钟级</td><td>重新训练，小时级</td></tr>
+<tr><td>可溯源</td><td>每句带 [n] → 文件:行号</td><td>不可溯源</td></tr>
+<tr><td>删除知识</td><td>删文件重建索引</td><td>几乎做不到</td></tr>
+<tr><td>失败表现</td><td>检索不到 → 明说“资料中没有找到”</td><td>一本正经地编造</td></tr></table></details>
+
+<h3>23.4 交互功能背后的工程做法</h3>
+<table><tr><th>功能</th><th>之前的问题</th><th>现在的做法</th><th>实测</th></tr>
+<tr><td>流式输出</td><td>整段生成完才返回，用户要盯着空白等十几秒</td><td><code>generate</code> 放在子线程，用 <code>TextIteratorStreamer</code> 边生成边推；服务端用 SSE，事件类型有 run / status / token / followups / done / error（早期还有 reset，用来“补引用重写”；改成程序直接补 [n] 之后就删了，见 24.8）</td><td>首字 1.4 s，进度提示 0.35 s 出现</td></tr>
+<tr><td>停止生成</td><td>前端断开连接，GPU 还在继续生成没人看的答案</td><td><code>StoppingCriteria</code> 每解码一个 token 检查一次 <code>threading.Event</code>；<code>/api/stop</code> 按 run id 停止，只能停自己的；关页面也会触发停止</td><td>点击后 0.3 s 停下，已生成部分照常入库</td></tr>
+<tr><td>追问建议</td><td>用户不知道下一步还能问什么</td><td>优先取被引用文件“代码概要”里离线预测的问法（不额外占 GPU），不足 2 条才让模型补；用二元组相似度去掉重复</td><td>一般 0 次额外生成</td></tr>
+<tr><td>补引用</td><td>小模型经常忘了标 [n]</td><td>最初的做法：把原答案打回让模型重写一次，前端收到 reset 事件后清空重新显示。<strong>后来改成程序补</strong>（见 24.8）</td><td>—</td></tr>
+<tr><td>深浅主题代码块</td><td>浅色页面里代码块仍是深色</td><td>代码块颜色全部改用 CSS 变量，并在 <code>:root[data-theme=light]</code> 下覆盖 GitHub Light 高亮色</td><td>—</td></tr></table>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：踩过的坑</summary><ul>
+<li><strong>no_grad 是线程局部的</strong>：主线程开了 <code>torch.no_grad()</code>，子线程里的 generate 并不受影响，显存会悄悄上涨。必须在子线程里再开一次。</li>
+<li><strong>线程里的异常不会传到 HTTP 响应</strong>：工作线程必须 try/except，把异常转成 error 事件放进队列，否则前端只会一直转圈。</li>
+<li><strong>提示词里别举“像真的一样”的例子</strong>：写了示例函数名 <code>crc32()</code>，7B 模型把它当成事实抄进了答案。</li>
+<li><strong>近因效应</strong>：证据有上千 token 时，模型会忘了 system 里的格式要求，所以在问题后面再重复一遍关键约束（ANSWER_TAIL）。</li></ul></details>
+
+<h3>23.5 下一步可以做什么</h3>
+<ul><li><strong>换成 vLLM 部署</strong>：<code>--api-base</code> 已经支持 OpenAI 兼容接口。vLLM 的连续批处理和 PagedAttention 可以去掉“GPU 串行锁”，多人同时提问也不用排队（参见本书推理章节）。</li>
+<li><strong>追问更贴题</strong>：目前按“被引用文件”取候选，有时会偏离原问题；可以改成按与原问题的相似度给候选排序。</li>
+<li><strong>量化对比</strong>：AWQ / GPTQ 4bit 与 bf16 在同一套 45 题上对比 recall 和答案质量，用数据决定要不要换。</li></ul>
+<div class="checks"><strong>自查</strong><ul><li>能画出五层架构，并说出每层由哪个文件负责</li><li>能说出三个模型各放在哪里、多大，以及换掉向量模型为什么必须重建索引</li><li>能解释“知识在索引、风格在 LoRA”，以及新知识从点踩到生效的完整路径</li><li>能讲清停止生成为什么要在 StoppingCriteria 里检查，而不是只断开连接</li></ul></div>
+`},
+{id:'local-vllm-bench',title:'24 · 换上 vLLM：部署、并发与端到端评测',subtitle:'第 23 章的服务用 transformers 直接生成，一次只能答一个人。本章把生成引擎换成 vLLM（带 LoRA），去掉串行锁改成并发槽，并用同一套 45 题把“答得对不对、多快、能扛几个人”一次测清楚。',priority:'P0',body:`
+<div class="callout"><strong>一句话：引擎换了，业务代码只改了一个参数。</strong>kb-agent 通过 OpenAI 兼容接口调用 vLLM，单人输出速度提升约 28%，8 人并发时总吞吐是原来的 <strong>5.7 倍</strong>，引用命中率没有下降（0.822 → 0.867）。代价是并发越高首字越慢，因为 KV cache 只够约 2.8 路满长请求。</div>
+
+<h3>24.1 先讲之前的做法和问题</h3>
+<p>第 23 章用 <code>TransformersLLM</code> 在进程内加载模型，配一把 GPU 锁让生成串行。问题有两个：</p>
+<ul><li><strong>不能并发</strong>：<code>model.generate</code> 一次只处理一个请求。第二个人进来只能排队，3 个人同时问，最后一个要等 30 秒以上。</li>
+<li><strong>显存浪费</strong>：HF 的 KV cache 按最大长度连续分配。vLLM 的 PagedAttention 按页（block）分配，多个请求共享显存池，同样的显存能同时服务更多请求。</li></ul>
+<p>vLLM 的<strong>连续批处理</strong>（continuous batching）可以理解成“公交车不等满员”：每解码一步都可以有新请求上车、已答完的请求下车，GPU 一直在做批量矩阵乘，而不是给一个人单独开一趟车。</p>
+
+<h3>24.2 安装：单独的 venv</h3>
+<pre><code class="language-bash">python3 -m venv ~/venvs/vllm
+~/venvs/vllm/bin/python -m pip install -i https://mirrors.aliyun.com/pypi/simple/ vllm==0.10.1.1
+# 坑：pip 会顺带装上最新的 transformers 5.x，启动时报
+#   AttributeError: Qwen2Tokenizer has no attribute all_special_tokens_extended
+~/venvs/vllm/bin/python -m pip install -i https://mirrors.aliyun.com/pypi/simple/ "transformers>=4.55,<4.57"</code></pre>
+<p><em>套路：推理引擎单独一个 venv，和训练环境（peft / bitsandbytes）分开。vLLM 会锁定 torch 和 CUDA 版本，混在一起迟早互相升级出问题。用 <code>python -m pip</code> 确保包装进了你要用的那个解释器。</em></p>
+
+<h3>24.3 启动命令，逐个参数解释</h3>
+<pre><code class="language-bash">~/venvs/vllm/bin/vllm serve ~/models/Qwen2.5-Coder-7B-Instruct \\
+  --served-model-name qwen2.5-coder-7b --host 127.0.0.1 --port 8001 \\
+  --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.72 \\
+  --enable-lora --max-lora-rank 16 \\
+  --lora-modules kb=kb-agent/finetune/out/lora \\
+  --enable-prefix-caching
+
+# kb-agent 改用 vLLM：模型名写 LoRA 的名字 kb，就会带上适配器
+/home/sti/venvs/gpu/bin/python -m kb.cli --api-base http://127.0.0.1:8001/v1 --api-model kb \\
+  serve --host 0.0.0.0 --port 8770</code></pre>
+<table><tr><th>参数</th><th>取值</th><th>为什么</th></tr>
+<tr><td><code>--port</code></td><td>8001</td><td>8000 已被别的服务占用，启动时会报地址被占用。先用 <code>lsof -i:8000</code> 查一下</td></tr>
+<tr><td><code>--max-model-len</code></td><td>8192</td><td>RAG 提示词（8 段证据）加上回答一般在 3–5k token；原生 32k 太长，会挤占 KV cache</td></tr>
+<tr><td><code>--gpu-memory-utilization</code></td><td>0.72</td><td>vLLM 会把这个比例的显存<strong>全部预占</strong>。同一张卡上 kb-agent 还要加载 bge-m3 和 reranker（约 4.5 GB），设成默认 0.9 的话 kb-agent 会 OOM</td></tr>
+<tr><td><code>--enable-lora</code> / <code>--lora-modules kb=...</code></td><td>rank 16</td><td>底座只加载一份；请求里 model 写 <code>kb</code> 走适配器，写 <code>qwen2.5-coder-7b</code> 走原模型，A/B 对比和回滚都不用重启</td></tr>
+<tr><td><code>--max-lora-rank</code></td><td>16</td><td>必须 ≥ 训练时的 r，否则加载适配器时报错</td></tr>
+<tr><td><code>--enable-prefix-caching</code></td><td>开</td><td>所有请求的 system 提示词相同，前缀的 KV 只需算一次，可以降低首字延迟</td></tr></table>
+
+<h3>24.4 读懂启动日志：显存都去哪了</h3>
+<table><tr><th>日志关键字</th><th>实测</th><th>含义</th></tr>
+<tr><td>Model loading took</td><td>14.32 GiB / 5.06 s</td><td>7B bf16 权重（7.6B × 2 字节）</td></tr>
+<tr><td>Available KV cache memory</td><td>1.21 GiB</td><td>24 GB × 0.72 − 权重 − 激活和 CUDA graph 预留</td></tr>
+<tr><td>GPU KV cache size</td><td>22,736 tokens</td><td>Qwen2.5-7B 用 GQA，每 token 的 KV 约 56 KB（28 层 × 4 个 KV 头 × 128 维 × 2(K,V) × 2 字节）</td></tr>
+<tr><td>Maximum concurrency for 8,192 tokens</td><td>2.78x</td><td>22736 / 8192：如果每个请求都跑满 8k，只能同时跑 2.78 个</td></tr>
+<tr><td>Graph capturing finished</td><td>15 s</td><td>为常见 batch 大小预录 CUDA graph，减少 decode 阶段的 kernel 启动开销</td></tr>
+<tr><td>init engine took</td><td>50 s</td><td>冷启动总时间；只有 vLLM 时整卡占用 18.5 GB，加上 kb-agent 约 23 GB</td></tr></table>
+<p><em>经验：调 <code>--gpu-memory-utilization</code> 时盯住“KV cache tokens”这一行。它除以平均请求长度（不是 max-model-len），才是真正能同时服务的人数。RAG 请求平均约 4k token，所以实际能并发 5 路左右，超过就要排队等 KV 页。</em></p>
+
+<h3>24.5 架构变化：串行锁 → 并发槽</h3>
+<figure class="diagram"><pre class="mermaid">flowchart LR
+ U1[用户 A] & U2[用户 B] & U3[用户 C] --> S["server.py 并发槽 BoundedSemaphore(8)"]
+ S --> AG[agent.py 检索 + 拼提示词]
+ AG -->|"HTTP 流式 model=kb"| V["vLLM :8001 连续批处理"]
+ V --> W["Qwen2.5-Coder-7B 底座"]
+ V -.->|"按请求挂载"| L["LoRA 适配器 kb"]
+ ADM[后台：重新入库] -->|"exclusive 拿满 8 个槽"| S</pre><figcaption>图 24-1：kb-agent 不再自己生成，而是把请求流式转发给 vLLM</figcaption></figure>
+<pre><code class="language-python"># server.py：并发上限由“引擎能力”决定，业务代码只管 acquire/release
+n_slots = args.concurrency or (8 if args.api_base else 1)
+gpu = threading.BoundedSemaphore(n_slots)
+excl = threading.Lock()
+
+@contextmanager
+def exclusive():
+    """换索引 / 向量化要独占：一次拿满所有槽，等在途问答结束，同时挡住新问答"""
+    with excl:                      # 防止两个独占者各拿一半，互相死锁
+        for _ in range(n_slots):
+            gpu.acquire()
+    try:
+        yield
+    finally:
+        for _ in range(n_slots):
+            gpu.release()</code></pre>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：为什么 8 个槽，而不是无限</summary>
+<p>vLLM 自己会排队，但 kb-agent 这边每个请求还要做检索（bge-m3 + reranker，也在 GPU 上），并且占一个线程。槽数的作用是<strong>背压</strong>：超过 8 个就在入口排队，并推送“排队中”事件给前端，避免请求全部堆进 vLLM 后首字延迟一起变差。从 bench 看，c8 的 TTFT p90 已经接近 5 s，再往上加槽，用户体感会变差。</p></details>
+<p>用量统计也要改：多个请求在不同线程里同时调用同一个 <code>OpenAICompatLLM</code> 对象，<code>self.last_usage</code> 会互相覆盖，所以改成 <code>threading.local()</code>。<em>套路：一个对象从“单线程独占”变成“多线程共享”时，先把所有 self.xxx 可变状态过一遍。</em></p>
+
+<h3>24.6 流式与停止：远端引擎的“停止”就是断开连接</h3>
+<p>transformers 后端靠 <code>StoppingCriteria</code> 停止（第 23 章）。vLLM 在另一个进程里，没法往里塞回调，但它有个约定：<strong>客户端断开连接，就 abort 该请求，KV 页立即回收</strong>。所以 <code>OpenAICompatLLM</code> 总是用 <code>stream=True</code>，每读一行检查一次 <code>stop_event</code>，置位就 break，<code>with urlopen</code> 退出时关闭连接。</p>
+<pre><code class="language-python">body = {..., "stream": True, "stream_options": {"include_usage": True}}  # 最后一帧带 token 用量
+with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+    for line in resp:
+        if stop_event is not None and stop_event.is_set():
+            break                    # 关连接 = vLLM abort
+        ...</code></pre>
+<details open><summary><span class="eye" aria-hidden="true"></span>大坑：同步 SSE 生成器的 finally 永远不执行</summary>
+<p>现象：浏览器关掉页面后，vLLM 日志里的生成吞吐一直不为 0，直到跑满 max_tokens。</p>
+<p>排查过程：</p>
+<ol><li>先怀疑 urllib：单独写脚本 <code>r.close()</code>，vLLM 立即停止，说明 urllib 没问题。</li>
+<li>再看服务端：SSE 用的是同步生成器，停止信号写在 <code>finally: ev.set()</code> 里。</li>
+<li>根因：Starlette 把<strong>同步生成器</strong>放进线程池迭代。客户端断开时只取消外层协程，线程池里的生成器既不会被 close，也不会走 finally，于是 <code>ev</code> 永远不会被置位。</li></ol>
+<pre><code class="language-python">async def events():                       # 必须是 async 生成器
+    loop = asyncio.get_running_loop()
+    try:
+        while (e := await loop.run_in_executor(None, q.get)) is not None:
+            yield f"data: {json.dumps(e, ensure_ascii=False)}\\n\\n"
+    finally:                              # 断开时在 await 处收到 CancelledError，这里立即执行
+        ev.set()</code></pre>
+<p>验证：断开后的下一个 10 秒统计窗口里，<code>Avg generation throughput: 0.0 tokens/s</code>。</p></details>
+<p><em>经验：不要用 <code>/metrics</code> 的 <code>num_requests_running</code> 判断请求是否被中止。实测它在 abort 后会一直显示 1 个“幽灵”请求。以日志里的生成吞吐降到 0 为准。</em></p>
+
+<h3>24.7 端到端评测：同一套题，质量和性能一起测</h3>
+<p>第 23 章的 <code>eval</code> 只回答“证据找没找到”。新增 <code>bench</code> 子命令，每题记录首字延迟 TTFT、总耗时、输出 token、<strong>引用命中</strong>（答案里 [n] 指向的文件是否包含标准出处）和是否拒答，结果写入 <code>logs/bench_*.json</code>。</p>
+<pre><code class="language-bash"># 基线：transformers + LoRA，只能串行
+/home/sti/venvs/gpu/bin/python -m kb.cli --lora finetune/out/lora bench --concurrency 1
+# vLLM：同一套题，并发 1 / 4 / 8
+/home/sti/venvs/gpu/bin/python -m kb.cli --api-base http://127.0.0.1:8001/v1 --api-model kb bench --concurrency 4</code></pre>
+<table><tr><th>配置</th><th>引用命中</th><th>有引用</th><th>拒答</th><th>TTFT p50 / p90</th><th>单题耗时 p50 / p90</th><th>45 题总时长</th><th>QPS</th><th>输出 tok/s</th></tr>
+<tr><td>transformers + LoRA，c1</td><td>0.822</td><td>0.889</td><td>0.067</td><td>0.87 / 1.10 s</td><td>8.76 / 24.36 s</td><td>549.7 s</td><td>0.082</td><td>25.3</td></tr>
+<tr><td>vLLM + LoRA，c1</td><td>0.844</td><td>0.911</td><td>0.067</td><td>0.73 / 0.94 s</td><td>7.85 / 19.46 s</td><td>436.2 s</td><td>0.103</td><td>32.5</td></tr>
+<tr><td>vLLM + LoRA，c4</td><td>0.867</td><td>0.956</td><td>0.044</td><td>0.98 / 1.74 s</td><td>10.36 / 22.54 s</td><td>135.4 s</td><td>0.332</td><td>106.4</td></tr>
+<tr><td>vLLM + LoRA，c8</td><td><strong>0.867</strong></td><td>0.933</td><td>0.067</td><td>1.86 / 4.97 s</td><td>14.75 / 28.19 s</td><td><strong>96.7 s</strong></td><td><strong>0.466</strong></td><td><strong>144.6</strong></td></tr></table>
+<p>怎么读这张表：</p>
+<ul><li><strong>单人也快了</strong>：c1 对 c1，输出速度 25.3 → 32.5 tok/s（+28%）。原因是 CUDA graph 减少了 kernel 启动开销，以及 vLLM 优化过的 attention kernel。</li>
+<li><strong>吞吐几乎随并发线性增长</strong>：c4 是 c1 的 3.3 倍，c8 是 4.5 倍。decode 阶段受显存带宽限制，一次读权重算 8 个 token 和算 1 个 token 耗时差不多，这就是批处理的收益来源。</li>
+<li><strong>代价是单个请求变慢</strong>：c8 的 TTFT p90 是 4.97 s。新请求的 prefill 要插进正在 decode 的批次里，而且 KV cache 只够约 2.8 路满长请求，超出的要等 KV 页。</li>
+<li><strong>质量没退化</strong>：引用命中 0.822 → 0.867。贪心解码下 vLLM 和 HF 的数值实现略有不同，几道边界题答案有变化，属于正常波动，不是变聪明了。<em>只要质量没下降就可以换。</em></li></ul>
+<details><summary><span class="eye" aria-hidden="true"></span>展开：bench 的几个设计取舍</summary><ul>
+<li><strong>质量和性能必须同一次跑</strong>：只看速度会选出“快但乱答”的配置（比如把 max_tokens 调小）。</li>
+<li><strong>看分位数，不看平均值</strong>：p90 反映“最倒霉的那 10% 用户”的体验；平均值会被大量短答案拉低。</li>
+<li><strong>transformers 后端禁止 c&gt;1</strong>：它本来就不支持并发，强行并发只会测出锁等待时间，直接报错退出更诚实。</li>
+<li><strong>TTFT 取第一个 token 事件的时间</strong>：包含检索和重排（约 0.3–0.5 s），是用户真实感受到的首字时间，不只是引擎内部的 prefill 时间。</li></ul></details>
+
+<h3>24.8 “回答总生成两遍”：用程序补引用代替模型重写</h3>
+<p><strong>现象</strong>：上线 vLLM 后，用户反馈答案经常先完整出现一遍，被清空后又从头出现一遍，等待时间也翻倍。</p>
+<p><strong>排查</strong>：抓一次 SSE，事件里有一个 <code>reset</code>。第一遍答案里一个 [n] 都没有，触发了第 23 章的“补引用重写”。用最近 10 个真实问题复测，<strong>5 个</strong>首遍缺引用，其中长列表、多步骤的答案最容易漏标。bench 的引用率看起来正常，是因为它统计的是重写之后的结果，掩盖了这个问题。</p>
+<p><strong>修法</strong>：不再让模型重写，改由程序补。逐行计算这一行和每段资料的二元组（相邻两个字符）重合度，取最高的那段，重合度 ≥ 0.5 就在句末标点前插入 [n]。代码块、表格行、标题不动，因为在这些行尾加字会破坏 Markdown 结构。</p>
+<pre><code class="language-python">def attach_citations(answer, chunks, min_overlap=0.5):
+    grams = [bigrams(c.text[:2400]) for c in chunks]
+    for line in answer.split("\\n"):          # 跳过 \`\`\` 代码块、| 表格、# 标题、已有 [n] 的行
+        g = bigrams(line)
+        score, n = max((len(g & cg) / len(g), i) for i, cg in enumerate(grams, 1))
+        if score >= min_overlap: ...          # 在句末标点前插入 [n]</code></pre>
+<table><tr><th></th><th>之前：模型重写</th><th>现在：程序补</th></tr>
+<tr><td>同一问题耗时</td><td>约 20 s（生成两遍）</td><td>约 10 s</td></tr>
+<tr><td>GPU 开销</td><td>多一次完整生成</td><td>0（几毫秒的集合运算）</td></tr>
+<tr><td>用户观感</td><td>答案清空重来</td><td>一次出完，done 时引用编号出现</td></tr>
+<tr><td>风险</td><td>重写时可能改动内容</td><td>纯改写、没有字面重合的句子补不上；阈值取 0.5 宁缺毋滥</td></tr></table>
+<p><em>套路：能用确定性程序做的后处理，就不要再调一次模型。小模型的回答大多是“摘抄 + 改写”，字面重合度足以定位出处。评测指标要统计“首遍”的表现，否则兜底逻辑会把问题藏起来。</em></p>
+
+<h3>24.9 排障速查</h3>
+<table><tr><th>现象</th><th>先查</th><th>处理</th></tr>
+<tr><td>vLLM 启动报 <code>all_special_tokens_extended</code></td><td><code>pip show transformers</code></td><td>降到 4.55–4.56</td></tr>
+<tr><td>kb-agent 加载 bge-m3 时 OOM</td><td><code>nvidia-smi</code> 看 vLLM 占了多少</td><td>降低 <code>--gpu-memory-utilization</code>，至少给 kb-agent 留 5 GB</td></tr>
+<tr><td>请求 model=kb 返回 404</td><td><code>curl :8001/v1/models</code></td><td>没开 <code>--enable-lora</code>，或 lora-modules 路径不对</td></tr>
+<tr><td>关页面后 GPU 仍在生成</td><td>vLLM 日志的 generation throughput</td><td>SSE 生成器必须是 async（见 24.6）</td></tr>
+<tr><td>并发高时首字很慢</td><td>日志里的 Running / Waiting 请求数和 KV cache usage</td><td>减少并发槽、缩短 max-model-len，或者用量化腾出 KV 空间（下一章）</td></tr></table>
+<div class="checks"><strong>自查</strong><ul><li>能解释连续批处理为什么能提高吞吐，以及代价落在哪个指标上</li><li>能从启动日志算出 KV cache 能同时容纳几个请求，并说出 gpu-memory-utilization 为什么设成 0.72</li><li>能说清并发槽和 exclusive() 分别解决什么问题</li><li>能讲出同步 SSE 生成器 finally 不执行的根因和修法</li><li>能读懂 bench 表：哪个配置适合 1 人用，哪个适合 10 人用</li></ul></div>
+`},
+{id:'local-nightly',title:'25 · 夜间流水线：让显卡下班后把经验沉淀下来',subtitle:'白天显卡给用户答题，晚上 21:30 之后空着。本章用 cron + 线上服务的管理接口，搭一条每晚自动跑的流水线：增量入库、代码概要、端到端自测、问答体检、合成训练草稿，早上看一份报告就知道系统昨晚变好还是变坏。',priority:'P0',body:`
+<div class="callout"><strong>一句话：先把“测量”和“沉淀”自动化，再谈“训练”。</strong>RAG 系统变聪明主要靠三层：知识库（知道什么）、检索模型（找不找得到）、LLM（怎么说）。每晚自动做的是零风险的前两类事情，外加给第三类攒数据。训练必须等人审过的数据和评测卡口都就绪后再做。</div>
+
+<h3>25.1 先讲之前的做法和问题</h3>
+<ul><li><strong>入库靠手点</strong>：代码改了，要有人去后台点“重新入库”。忘了点，回答就停留在旧版本。</li>
+<li><strong>代码概要只做了一部分</strong>：概要（文件讲什么 + 预测问法）对检索和追问建议帮助很大，但要用 GPU 逐文件生成。新加的 5 个项目还有 <strong>1019 个文件</strong>没做，白天跑又会和用户抢卡。</li>
+<li><strong>质量靠感觉</strong>：bench 要手动跑，没有按天的趋势。改完东西说不清是变好还是变坏。</li>
+<li><strong>坏例子散在数据库里</strong>：点踩、没找到、无引用的问题都在 kb.db 里，但没人每天去翻。</li></ul>
+
+<h3>25.2 整体设计：飞轮</h3>
+<figure class="diagram"><pre class="mermaid">flowchart LR
+  A["白天问答<br/>日志 / 点赞 / 点踩 / 没找到"] -->|"沉淀"| B["kb.db + 审核队列"]
+  B -->|"21:30 cron"| C["nightly.py"]
+  C -->|"rebuild"| D["增量入库 + 检索卡口"]
+  C -->|"summarize"| E["代码概要<br/>07:30 前自动停"]
+  C -->|"selftest"| F["端到端自测"]
+  C -->|"make_data"| G["合成草稿<br/>只追加、等人审"]
+  D --> H["次日线上服务"]
+  E --> D
+  F -->|"报告"| R["logs/nightly/日期.md"]
+  B -->|"体检"| R
+  G -.->|"人审通过后"| T["每周训练<br/>LoRA / 检索模型"]
+  T -.->|"过卡口才上线"| H
+  H --> A</pre></figure>
+<p>三个关键决定：</p>
+<ol><li><strong>用 GPU 的步骤都走线上服务的 HTTP 管理接口</strong>，不另起 GPU 进程。vLLM 已经占了 72% 显存，kb-agent 进程里还有 bge-m3 和 reranker，再加载一份 24G 的卡放不下。而且自测测的就是线上真正在跑的那套。唯一的例外是合成草稿：它用子进程跑 <code>make_data</code>，生成直接调用 vLLM，向量模型放在 CPU 上（<code>--embed-device cpu</code>），所以不额外占显存。</li>
+<li><strong>夜里只“造”不“用”</strong>：合成数据只追加到草稿文件，不进训练集，也不进卡口题库。没人审过的数据如果直接拿来训练，模型的错误会被它自己一轮轮放大。</li>
+<li><strong>到点必须收工</strong>：概要生成到 07:30 自动请求停止。已生成的按文件落盘，下一晚接着做。</li></ol>
+
+<h3>25.3 每一步做什么</h3>
+<table><tr><th>步骤</th><th>接口 / 命令</th><th>GPU 用法</th><th>失败的影响</th></tr>
+<tr><td>增量入库</td><td><code>POST /api/admin/rebuild</code></td><td>bge-m3 只编码改动的块（按内容 hash 复用）</td><td>没过检索卡口就不替换，线上不受影响</td></tr>
+<tr><td>代码概要</td><td><code>POST /api/admin/summarize</code></td><td>vLLM 逐文件生成，每个文件占一个并发槽</td><td>到点停；做完自动再入库一次</td></tr>
+<tr><td>端到端自测</td><td><code>POST /api/admin/selftest</code>（新增）</td><td>线上模型并发 4 跑题库</td><td>报告里写失败原因，不影响其他步骤</td></tr>
+<tr><td>问答体检</td><td>只读打开 <code>kb.db</code></td><td>无</td><td>—</td></tr>
+<tr><td>合成草稿</td><td><code>finetune.make_data --api-base ... --embed-device cpu</code></td><td>出题、作答走 vLLM；检索的问题编码放 CPU</td><td>只追加 drafts.jsonl，不动人工校对清单</td></tr></table>
+<details open><summary><span class="eye" aria-hidden="true"></span>selftest：评测不写问答库</summary>
+<p>直接调用 <code>/api/ask</code> 也能测，但每题都会写进 kb.db，热门榜和统计会被测试题污染。所以新增了管理接口：复用 <code>bench_rows()</code>，每题占一个并发槽和真实用户公平排队，结果只返回、不入库。</p>
+<pre><code class="language-python">@app.post("/api/admin/selftest", dependencies=[Depends(require_admin)])
+def selftest(limit: int | None = None, concurrency: int = 4):
+    class Slotted:                       # 每题占一个并发槽
+        def ask(self, *a, **kw):
+            with gpu:
+                return agent.ask(*a, **kw)
+    rows = load_questions(config=args.config)[:limit]
+    summary, items = bench_rows(Slotted(), rows, max(1, min(concurrency, n_slots)), log=lambda s: None)
+    return {"summary": summary, "items": items}</code></pre>
+<p><em>套路：把命令行里的评测逻辑抽成纯函数（bench_rows / bench_summary），CLI 和服务端各包一层。同一套打分逻辑，离线对比和线上自测的数字才可比。</em></p></details>
+<details><summary><span class="eye" aria-hidden="true"></span>新指标：首遍引用率 first_cited</summary>
+<p>第 24.8 节把“漏标引用”改成程序补之后，<code>cited_any</code> 几乎总是 1，已经看不出模型本身守不守规矩。新增 <code>first_cited</code>：trace 里没有 <code>attach_cite</code> 步骤，说明模型自己写了 [n]。这个指标是以后 LoRA 微调要拉高的目标。<em>经验：兜底逻辑上线后，要同时统计“兜底前”的指标，否则问题被藏起来，也就没有优化方向了。</em></p></details>
+
+<h3>25.4 调度：cron + flock + 健康检查</h3>
+<pre><code class="language-bash"># crontab -e
+30 21 * * * /home/sti/Documents/Trae-CN/default/llm-basics/kb-agent/scripts/nightly_ubuntu2004.sh
+
+# nightly_ubuntu2004.sh 的关键三行
+exec 9>"$LOG_DIR/.lock"; flock -n 9 || exit 0          # 上一次没跑完就跳过，不叠加
+curl -sf -m 5 http://127.0.0.1:8770/api/config || exit 1  # 服务不在线只记日志
+/home/sti/venvs/gpu/bin/python scripts/nightly.py &gt;&gt;"$LOG" 2&gt;&amp;1</code></pre>
+<ul><li><strong>cron 的环境很干净</strong>：没有你的 PATH、没有激活的 venv。所以脚本里一律写绝对路径的 Python。</li>
+<li><strong>flock 比 PID 文件可靠</strong>：进程崩溃后锁会被内核自动释放，不会留下“僵尸锁”。</li>
+<li><strong>手动补跑</strong>：<code>scripts/nightly_ubuntu2004.sh --skip summarize --synth 0</code> 只做入库和自测，几分钟就能出报告。</li></ul>
+
+<h3>25.5 合成草稿：和线上服务共用一张卡</h3>
+<p>第 21 章的 <code>make_data</code> 原来自己加载 transformers 模型和 bge-m3，必须独占显卡。改了两个参数后，它可以在线上服务运行时一起跑：</p>
+<pre><code class="language-bash">python -m finetune.make_data --n 100 --seed 20261124 --append --review 0 \\
+    --api-base http://127.0.0.1:8001/v1 --api-model qwen2.5-coder-7b --embed-device cpu</code></pre>
+<ul><li><code>--api-base</code>：出题和作答都发给 vLLM。vLLM 本来就在做连续批处理，多一路请求几乎不影响概要生成的速度。</li>
+<li><code>--embed-device cpu</code>：索引向量早就算好了，检索时只需要编码一句问题，CPU 上约 0.2 s，完全够用。</li>
+<li><code>--review 0</code>：不重写 review.md，因为里面有人已经校对过的状态。</li>
+<li><strong>踩坑：并发写同一个文件</strong>。最初 <code>--append</code> 的实现是“启动时读入全部旧行 → 结束时整文件重写”。手动跑的 300 条和 nightly 的 100 条同时运行时，后结束的那个会把先结束的结果覆盖掉。改成追加模式只用 <code>open(..., "a")</code> 写本次新增的行，两个进程就互不覆盖。经验：多个进程共享的数据文件，一律只追加、不重写。</li>
+<li><code>--api-model qwen2.5-coder-7b</code>：用底座而不是 LoRA 模型造数据，避免模型自己蒸馏自己、把已有的偏差越训越深。</li>
+<li>seed 用日期：每晚抽到不同的资料块，已经造过题的源块会自动跳过。</li></ul>
+
+<h3>25.6 首晚结果</h3>
+<div id="nightly-first">
+<p>2026-11-24 首晚：21:07 开始，21:55 结束，总共 47 分钟。报告在 <code>logs/nightly/20261124.md</code>。</p>
+<table><tr><th>步骤</th><th>结果</th><th>说明</th></tr>
+<tr><td>增量入库</td><td>11968 块，recall@8 = 1.0，GATE PASS</td><td>向量全部复用（新编码 0），只用了 0.5 s。增量哈希起作用了。</td></tr>
+<tr><td>代码概要</td><td>1019 个文件全部补完，用时 45 分钟</td><td>和合成任务一起压在 vLLM 上，GPU 利用率 95%。</td></tr>
+<tr><td>端到端自测（45 题）</td><td>cite_hit 0.867，cited_any 0.933，first_cited 0.689，p50 8.4 s，TTFT 1.05 s</td><td>6 题没有引用到标准答案的文件，已列在报告里。</td></tr>
+<tr><td>线上体检（24 h）</td><td>63 问，11 人，没找到 14，无引用 15</td><td>“没找到”多数是概要补齐之前问的。</td></tr>
+<tr><td>合成草稿（seed 20261124，300 块）</td><td>自动通过 92，不通过 75，检索找不回丢弃 36，已造过跳过 44</td><td>草稿从 466 条增加到 633 条。</td></tr></table>
+<p>三个值得记住的发现：</p>
+<ol><li><strong>first_cited 只有 0.69</strong>：约 3 成回答第一遍没带引用，靠程序补引用才合格。这就是 LoRA SFT 要改的行为：用人审过的“每句带 [n]”样本训练，目标是把这个数提到 0.9 以上。不是“教知识”，是“教规矩”。</li>
+<li><strong>概要补齐后，“没找到”的老问题被救回来了</strong>：跑完后重问“udslib 刷写数据的校验和是怎么算的”“EM4 遮挡区域几行几列”“功能安全故障监控怎么实现”，三题都给出了带引用的答案（之前都是“资料中没有找到”）。这说明这类问题缺的是“口语 → 文件”的桥（概要块），而不是模型能力。</li>
+<li><strong>合成题的自动通过率约 55%</strong>：不通过的主要是问题太琐碎（如“文件的版权声明是什么”），或者回答没引用源块。这正是需要人审的原因。出题 prompt 已加约束：“问功能、流程、参数含义或排查方法，不要问版权、作者、注释、头文件包含”，从第二晚起生效。</li></ol>
+<p>首晚结束后显卡还空着，又追加了一轮 400 块的合成（seed 2026112402），用的就是“只追加”的新写法。结果：自动通过 97，不通过 67，检索找不回丢弃 49，已造过跳过 108，用时 16 分钟。草稿从 633 条增加到 797 条。</p>
+</div>
+
+<h3>25.7 后续路线：数据攒够之后再训练</h3>
+<table><tr><th>阶段</th><th>做什么</th><th>前提</th></tr>
+<tr><td>现在（每晚）</td><td>入库、概要、自测、体检、合成草稿</td><td>无</td></tr>
+<tr><td>下一步</td><td>合成题经人审后扩充评测集到 200 题以上</td><td>每天花 10 分钟审 review.md</td></tr>
+<tr><td>每周</td><td>检索模型微调：用（真实问题，被引用片段）做对比学习</td><td>评测集够大，能看出 recall 的变化</td></tr>
+<tr><td>每周</td><td>LoRA 增量 SFT：用点赞和审核过的答案，混入旧数据防遗忘</td><td>first_cited 有基线；新 adapter 过卡口才热加载</td></tr>
+<tr><td>以后</td><td>DPO：用同一问题的点赞答案和点踩答案组成偏好对</td><td>点踩数据攒到上百条</td></tr></table>
+<p><em>为什么不每晚都训练：7B 模型训一次 LoRA 要 1 小时以上，而且每天新增的、审过的数据只有十几条。训练太频繁，噪声比信号多。把知识交给检索层（每晚更新），把“怎么说”交给权重（每周更新），这是两种不同节奏的学习。</em></p>
+<div class="checks"><strong>自查</strong><ul><li>能说清为什么夜间任务要走线上服务的接口，而不是另起进程</li><li>能解释“夜里只造不用”防的是什么</li><li>能说出 first_cited 和 cited_any 的区别，以及为什么兜底之后要看兜底前的指标</li><li>能说出 flock 相比 PID 文件的优点</li></ul></div>
 `},
 ];
