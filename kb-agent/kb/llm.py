@@ -5,6 +5,7 @@
 套路：业务层只依赖 chat(messages) 一个接口，推理引擎可插拔——这正是部署岗天天做的事。
 """
 import json
+import threading
 import urllib.request
 
 
@@ -75,17 +76,34 @@ class OpenAICompatLLM:
     def __init__(self, base_url, model, api_key="local", max_new_tokens=768, timeout=300):
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model, self.api_key, self.max_new_tokens, self.timeout = model, api_key, max_new_tokens, timeout
+        self._tls = threading.local()  # 并发请求各在自己的线程里，用量统计放线程局部，避免互相覆盖
+
+    @property
+    def last_usage(self):
+        return getattr(self._tls, "usage", {})
 
     def chat(self, messages, max_new_tokens=None, stop=None, on_token=None, stop_event=None):
-        body = {"model": self.model, "messages": messages, "temperature": 0, "max_tokens": max_new_tokens or self.max_new_tokens}
+        """总是用 stream=True：既能边收边推给前端，又能在 stop_event 置位时直接关连接——vLLM 发现客户端断开会 abort 该请求，
+        KV cache 立即回收。套路：远端引擎的“停止”就是断开连接，不需要额外的取消接口。"""
+        body = {"model": self.model, "messages": messages, "temperature": 0, "max_tokens": max_new_tokens or self.max_new_tokens,
+                "repetition_penalty": 1.05, "stream": True, "stream_options": {"include_usage": True}}
         if stop:
             body["stop"] = stop
         req = urllib.request.Request(self.url, json.dumps(body).encode(), {"Content-Type": "application/json",
                                                                            "Authorization": f"Bearer {self.api_key}"})
+        text, self._tls.usage = "", {}
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            data = json.loads(resp.read())
-        self.last_usage = data.get("usage", {})
-        text = data["choices"][0]["message"]["content"].strip()
-        if on_token:  # 远端后端暂不走 SSE，整段一次性推给前端，接口形状保持一致
-            on_token(text)
-        return text
+            for line in resp:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                line = line.strip()
+                if not line.startswith(b"data:") or line == b"data: [DONE]":
+                    continue
+                data = json.loads(line[5:])
+                self._tls.usage = data.get("usage") or self._tls.usage
+                for ch in data.get("choices", []):
+                    piece = ch.get("delta", {}).get("content") or ""
+                    text += piece
+                    if piece and on_token:
+                        on_token(piece)
+        return text.strip()

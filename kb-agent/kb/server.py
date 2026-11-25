@@ -10,6 +10,7 @@ import json
 import shutil
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -30,7 +31,23 @@ def serve(args, retriever, llm):
 
     store = Store(args.data_dir)
     agent = KnowledgeAgent(retriever, llm, k=args.k)
-    gpu = threading.Lock()
+    # 并发槽：本机 transformers 只能一条一条生成（1 槽）；vLLM 自带连续批处理，多条请求一起解码更划算（默认 8 槽）。
+    # 套路：并发上限放在“引擎能力”这一层决定，业务代码只管 acquire/release，换引擎不改调用方
+    n_slots = args.concurrency or (8 if args.api_base else 1)
+    gpu = threading.BoundedSemaphore(n_slots)
+    excl = threading.Lock()
+
+    @contextmanager
+    def exclusive():
+        """换索引/向量化要独占：一次拿满所有槽，等在途问答结束、挡住新问答。excl 防两个独占者各拿一半互相死锁。"""
+        with excl:
+            for _ in range(n_slots):
+                gpu.acquire()
+        try:
+            yield
+        finally:
+            for _ in range(n_slots):
+                gpu.release()
     runs = {}  # run_id -> (client, stop_event)：正在生成的请求，供 /api/stop 定位
     job = {"state": "idle", "log": [], "started": None, "finished": None}
     app = FastAPI(title="研发知识库助手")
@@ -112,7 +129,7 @@ def serve(args, retriever, llm):
 
     @app.post("/api/ask_stream")
     def ask_stream(req: Ask, request: Request, client: str = Depends(client_id)):
-        """SSE 流式问答：status（进度）/ token（答案片段）/ reset（补引用重来）/ done（最终记录，含出处）/ error。
+        """SSE 流式问答：run（run id，供 /api/stop）/ status（进度）/ token（答案片段）/ followups（追问）/ done（最终记录，含出处）/ error。
         套路：生成在工作线程里跑，事件经队列交给响应生成器；排队也作为事件推给前端，用户知道“在等什么”。"""
         import queue
         import uuid
@@ -143,9 +160,14 @@ def serve(args, retriever, llm):
 
         threading.Thread(target=work, daemon=True).start()
 
-        def events():
+        async def events():
+            # 套路：必须用 async 生成器。同步生成器被 Starlette 丢进线程池迭代，客户端断开时只取消外层协程，
+            # 生成器既不 close 也不走 finally——停止信号永远发不出去（实测 vLLM 照样跑到 max_tokens）。
+            # async 版本在 await 处收到 CancelledError，finally 立即执行。
+            import asyncio
+            loop = asyncio.get_running_loop()
             try:
-                while (e := q.get()) is not None:
+                while (e := await loop.run_in_executor(None, q.get)) is not None:
                     yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
             finally:  # 客户端断开（关页面/刷新）也要停 GPU，否则没人看的回答还在白白占卡
                 ev.set()
@@ -277,7 +299,7 @@ def serve(args, retriever, llm):
             log(f"切块完成 {sum(s['chunks'] for s in stats.values())} 块，{time.time() - t:.1f}s")
             for name, s in stats.items():
                 log(f"  {name}: {s['files']} 文件 / {s['chunks']} 块  {s.get('version') or ''}")
-            with gpu:  # 向量化与问答共用 GPU：期间提问会排队
+            with exclusive():  # 向量化与问答共用 GPU：期间提问会排队
                 t = time.time()
                 embed_model = json.loads((live / "manifest.json").read_text(encoding="utf-8"))["embed_model"]
                 s = build_index(nxt, embed_model, embedder=retriever.embedder)
@@ -307,10 +329,24 @@ def serve(args, retriever, llm):
 
     @app.post("/api/admin/reload", dependencies=[Depends(require_admin)])
     def reload():
-        with gpu:
+        with exclusive():
             n = retriever.reload()
         apply_settings()
         return {"chunks": n}
+
+    @app.post("/api/admin/selftest", dependencies=[Depends(require_admin)])
+    def selftest(limit: int | None = None, concurrency: int = 4):
+        """夜间自测：用线上同一个模型/索引跑端到端评测，不写问答库（不污染热门榜和统计）。
+        套路：评测走线上进程，而不是另起一个进程——显存里已经有模型，再加载一份 24G 卡放不下，而且测的就是真正在跑的那套。"""
+        from .cli import bench_rows, load_questions
+
+        class Slotted:  # 每题占一个并发槽，和真实用户公平排队
+            def ask(self, *a, **kw):
+                with gpu:
+                    return agent.ask(*a, **kw)
+        rows = load_questions(config=args.config)[:limit]
+        summary, items = bench_rows(Slotted(), rows, max(1, min(concurrency, n_slots)), log=lambda s: None)
+        return {"summary": summary, "items": items}
 
     # ---------- 纠错 → 分类 → 审核 → 知识卡片 ----------
     cdir = cards_dir(args.config)

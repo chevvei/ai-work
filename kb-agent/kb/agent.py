@@ -76,6 +76,28 @@ def check_citations(answer, n_evidence):
     return {"cited": [i for i in cited if 1 <= i <= n_evidence], "invalid": [i for i in cited if not 1 <= i <= n_evidence]}
 
 
+def attach_citations(answer, chunks, min_overlap=0.5):
+    """模型漏标 [n] 时由程序补：逐行算和每段资料的二元组重合度，最高且过阈值就在行尾补 [n]。
+    套路：之前是把答案发回模型重写一遍——用户看到答案生成两遍、等待翻倍；小模型的回答大多是“摘抄+改写”，
+    字面重合度足以定位出处，零 GPU 开销。代码块、表格、标题不动（行尾加字会破坏 Markdown 结构）。"""
+    grams = [bigrams(c.text[:2400]) for c in chunks]
+    out, in_code = [], False
+    for line in answer.split("\n"):
+        s = line.strip()
+        if s.startswith("```"):
+            in_code = not in_code
+        elif not in_code and s and not s.startswith(("|", "#")) and not CITE.search(s):
+            g = bigrams(s)
+            if len(g) >= 6:
+                score, n = max((len(g & cg) / len(g), i) for i, cg in enumerate(grams, 1))
+                if score >= min_overlap:
+                    body = line.rstrip()
+                    tail = body[-1] if body[-1] in "。；，.;：:" else ""
+                    line = f"{body[:len(body) - len(tail)]} [{n}]{tail}"
+        out.append(line)
+    return "\n".join(out)
+
+
 def source_list(chunks, cited):
     out = []
     for i in cited:
@@ -89,7 +111,7 @@ class KnowledgeAgent:
         self.retriever, self.llm, self.k, self.max_steps = retriever, llm, k, max_steps
 
     def ask(self, question, project=None, mode="rag", on_event=None, stop_event=None, followups=False):
-        """on_event(dict)：流式事件。status=进度提示；token=答案片段；reset=答案作废重来（补引用时）；followups=追问建议。
+        """on_event(dict)：流式事件。status=进度提示；token=答案片段；followups=追问建议。
         stop_event：threading.Event，置位后在下一个 token 处停止生成，已生成部分照常返回。"""
         emit = on_event or (lambda e: None)
         stopped = lambda: stop_event is not None and stop_event.is_set()
@@ -107,13 +129,10 @@ class KnowledgeAgent:
         answer = "" if stopped() else self.llm.chat(messages, on_token=tok, stop_event=stop_event)
         cites = check_citations(answer, len(evidence))
         if evidence and not cites["cited"] and not stopped():
-            # 套路：提示词约束是“软”的，程序校验是“硬”的。没引用就把原回答发回去要求补引用，只重试一次
-            trace.append({"step": "recite"})
-            emit({"type": "reset", "text": "正在补充出处"})
-            answer = self.llm.chat(messages + [{"role": "assistant", "content": answer}, {"role": "user", "content":
-                                   "上面的回答缺少出处。请保持内容不变，在每个结论句末补上对应的资料编号 [n]；找不到出处的句子删掉。"}],
-                                   on_token=tok, stop_event=stop_event)
+            # 套路：提示词约束是“软”的，程序校验是“硬”的。没引用由程序按字面重合度补上，不再让模型重写（见 attach_citations）
+            answer = attach_citations(answer, evidence)
             cites = check_citations(answer, len(evidence))
+            trace.append({"step": "attach_cite", "cited": cites["cited"]})
         is_stopped = stopped()
         if is_stopped:
             answer = (answer.strip() + STOPPED).strip()

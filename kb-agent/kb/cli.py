@@ -157,6 +157,72 @@ def cmd_serve(args):
     serve(args, make_retriever(args), make_llm(args))
 
 
+def pct(xs, p):
+    xs = sorted(xs)
+    return round(xs[min(len(xs) - 1, int(len(xs) * p))], 2) if xs else None
+
+
+def bench_one(agent, row):
+    """单题端到端打分。first_cited：模型自己写了 [n]（没靠程序补），反映“模型本身守不守规矩”，是后续微调要拉高的指标。"""
+    t0, first = time.time(), []
+    res = agent.ask(row["question"], on_event=lambda e: e["type"] == "token" and not first and first.append(time.time()))
+    cited = [f"{s['project']}/{s['path']}" for s in res["sources"]]
+    return {"question": row["question"], "ttft": round(first[0] - t0, 2) if first else None, "seconds": round(time.time() - t0, 2),
+            "out_tokens": res["usage"].get("completion_tokens", 0), "cited_any": bool(cited),
+            "first_cited": not any(t["step"] == "attach_cite" for t in res["trace"]),
+            "cite_hit": any(e in c for c in cited for e in row["expect"]), "refused": "没有找到" in res["answer"],
+            "answer": res["answer"]}
+
+
+def bench_rows(agent, rows, concurrency=1, log=print):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    lock, items = threading.Lock(), []
+
+    def one(row):
+        it = bench_one(agent, row)
+        with lock:
+            items.append(it)
+            log(f"{'HIT ' if it['cite_hit'] else 'MISS'} ttft={it['ttft']}s total={it['seconds']}s {row['question'][:40]}")
+
+    t0 = time.time()
+    with ThreadPoolExecutor(concurrency) as ex:
+        list(ex.map(one, rows))
+    return bench_summary(items, time.time() - t0, concurrency), items
+
+
+def bench_summary(items, wall, concurrency):
+    n = max(1, len(items))
+    rate = lambda key: round(sum(bool(i.get(key)) for i in items) / n, 3)
+    return {"concurrency": concurrency, "n": len(items), "cite_hit": rate("cite_hit"), "cited_any": rate("cited_any"),
+            "first_cited": rate("first_cited"), "refused": rate("refused"),
+            "ttft_p50": pct([i["ttft"] for i in items if i["ttft"]], .5), "ttft_p90": pct([i["ttft"] for i in items if i["ttft"]], .9),
+            "latency_p50": pct([i["seconds"] for i in items], .5), "latency_p90": pct([i["seconds"] for i in items], .9),
+            "wall_s": round(wall, 1), "qps": round(len(items) / max(wall, 1e-6), 3),
+            "out_tok_per_s": round(sum(i["out_tokens"] for i in items) / max(wall, 1e-6), 1)}
+
+
+def cmd_bench(args):
+    """端到端评测：检索评测只回答“证据找没找到”，这里回答“答案对不对、多快、能扛几个人”。
+
+    每题记录：首字延迟 TTFT、总耗时、输出 token、引用命中（答案里 [n] 指向的文件是否含标准出处）、是否拒答。
+    同一套题分别跑 transformers 和 vLLM、不同并发，结果写 logs/bench_*.json，直接可比。
+    套路：质量和性能必须同一次跑出来——只看速度会选出“快但乱答”的配置。
+    """
+    from .agent import KnowledgeAgent
+    if not args.api_base and args.concurrency > 1:
+        raise SystemExit("本机 transformers 后端不支持并发生成，--concurrency 只能为 1（并发请用 --api-base 接 vLLM）")
+    agent = KnowledgeAgent(make_retriever(args), make_llm(args), k=args.k)
+    rows = load_questions(args.questions, args.config)[:args.limit]
+    summary, items = bench_rows(agent, rows, args.concurrency, log=lambda s: print(s, flush=True))
+    summary = {"backend": args.api_base or f"transformers{'+lora' if args.lora else ''}", **summary}
+    print(json.dumps(summary, ensure_ascii=False))
+    out = ROOT / "logs" / f"bench_{time.strftime('%Y%m%d_%H%M%S')}_c{args.concurrency}.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps({"summary": summary, "items": items}, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"明细：{out}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=ROOT / "sources.toml")
@@ -192,12 +258,18 @@ def main():
     p = sub.add_parser("eval")
     p.add_argument("--questions", type=Path, default=ROOT / "eval" / "questions.jsonl")
     p.add_argument("--use-project", action="store_true")
-    p.add_argument("--gate", action="store_true", help="和 eval/baseline.json 比，老题回退则退出码 2")
+    p.add_argument("--gate", action="store_true", help="和 logs/eval_baseline.json 比：老题变 MISS 或 recall@8 降超 0.02 则退出码 2")
     p.add_argument("--accept", action="store_true", help="人工确认后把本次结果设为新基线")
     p.set_defaults(fn=cmd_eval)
+    p = sub.add_parser("bench", help="端到端评测：引用命中率 + TTFT/延迟/吞吐，可对比后端与并发")
+    p.add_argument("--questions", type=Path, default=ROOT / "eval" / "questions.jsonl")
+    p.add_argument("--concurrency", type=int, default=1)
+    p.add_argument("--limit", type=int)
+    p.set_defaults(fn=cmd_bench)
     p = sub.add_parser("serve")
     p.add_argument("--port", type=int, default=8770)
     p.add_argument("--host", default="127.0.0.1", help="局域网上线用 0.0.0.0")
+    p.add_argument("--concurrency", type=int, help="同时生成的请求数；默认本机模型 1、--api-base(vLLM) 8")
     p.add_argument("--data-dir", type=Path, default=ROOT / "data", help="后台开关 site.json、问答库 kb.db、管理员口令")
     p.set_defaults(fn=cmd_serve)
     args = ap.parse_args()

@@ -459,7 +459,6 @@ async function ask(question) {
         if (e.type === 'run') state.run = e.id;
         else if (e.type === 'status') t.status = e.text;
         else if (e.type === 'token') t.partial += e.text;
-        else if (e.type === 'reset') { t.partial = ''; t.status = e.text; }
         else if (e.type === 'followups') t.status = '正在整理追问建议';
         else if (e.type === 'error') throw new Error(e.text);
         else if (e.type === 'done') { Object.assign(t, e.qa); done = true; }
